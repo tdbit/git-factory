@@ -8,7 +8,7 @@ REPO="$(basename "$ROOT")"
 BRANCH="factory"
 FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
-PY_NAME=".git-factory/factory.py"
+PY_NAME="factory.py"
 
 # --- ensure .git-factory dir is ignored locally ---
 DEV_MODE=false
@@ -69,17 +69,18 @@ if [[ -d "$WORKTREE" ]]; then
 fi
 git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
 
-# --- write minimal python runner into worktree ---
-mkdir -p "$WORKTREE/.git-factory"
+# --- write python runner into worktree ---
+mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state"
 cat > "$WORKTREE/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
-import os, sys, signal, time, shutil, subprocess
+import os, sys, re, signal, time, shutil, subprocess
 from pathlib import Path
 
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-ROOT = Path(__file__).resolve().parents[1]
-FACTORY = ROOT / ".git-factory"
+ROOT = Path(__file__).resolve().parent
+TASKS_DIR = ROOT / "tasks"
+STATE_DIR = ROOT / "state"
 
 def log(msg):
     print(f"\033[33mfactory:\033[0m {msg}", flush=True)
@@ -88,7 +89,6 @@ def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
 
 def require_claude():
-    """Return path to claude CLI, or None if not found."""
     path = shutil.which("claude")
     if not path:
         log("claude not found on PATH")
@@ -99,28 +99,118 @@ def init():
     claude = require_claude()
     if not claude:
         return 1
-
-    branch = sh("git","rev-parse","--abbrev-ref","HEAD")
+    branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
     if branch != "factory":
         log(f"not on factory branch: {branch}")
         return 2
-
-    (FACTORY / "state").mkdir(parents=True, exist_ok=True)
-    (FACTORY / "state" / "initialized.txt").write_text(time.ctime() + "\n")
-    (FACTORY / "state" / "claude_path.txt").write_text(claude + "\n")
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "initialized.txt").write_text(time.ctime() + "\n")
+    (STATE_DIR / "claude_path.txt").write_text(claude + "\n")
     return 0
 
-def needs_bootstrap():
-    claude_md = ROOT / "CLAUDE.md"
-    if not claude_md.exists():
-        return True
-    return "## Bootstrap" in claude_md.read_text()
+# --- task parsing ---
+
+def parse_task(path):
+    text = path.read_text()
+    if not text.startswith("---"):
+        return None
+    _, fm, body = text.split("---", 2)
+    meta = {}
+    for line in fm.strip().splitlines():
+        key, _, val = line.partition(":")
+        meta[key.strip()] = val.strip()
+    name = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", path.stem)
+    return {
+        "name": name,
+        "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
+        "done": meta.get("done", ""),
+        "parent": meta.get("parent", ""),
+        "prompt": body.strip(),
+        "_path": path,
+    }
+
+def load_tasks():
+    tasks = []
+    if TASKS_DIR.exists():
+        for f in sorted(TASKS_DIR.glob("*.md")):
+            t = parse_task(f)
+            if t:
+                tasks.append(t)
+    return tasks
+
+def update_task_meta(task, **kwargs):
+    path = task["_path"]
+    text = path.read_text()
+    _, fm, body = text.split("---", 2)
+    lines = fm.strip().splitlines()
+    existing = {}
+    for i, line in enumerate(lines):
+        key, _, _ = line.partition(":")
+        existing[key.strip()] = i
+    for key, val in kwargs.items():
+        if key in existing:
+            lines[existing[key]] = f"{key}: {val}"
+        else:
+            lines.append(f"{key}: {val}")
+    path.write_text("---\n" + "\n".join(lines) + "\n---" + body)
+
+# --- completion checks ---
+
+def check_done(done):
+    if not done:
+        return False
+    if done == "always":
+        return False
+    m = re.match(r'(\w+)\((.+)\)$', done)
+    if not m:
+        log(f"unknown done: {done}")
+        return False
+    func, raw_args = m.group(1), m.group(2)
+    args = re.findall(r'"([^"]*)"', raw_args)
+    if func == "section_exists":
+        text = (ROOT / "CLAUDE.md").read_text() if (ROOT / "CLAUDE.md").exists() else ""
+        return args[0] in text
+    elif func == "no_section":
+        text = (ROOT / "CLAUDE.md").read_text() if (ROOT / "CLAUDE.md").exists() else ""
+        return args[0] not in text
+    elif func == "file_exists":
+        return (ROOT / args[0]).exists()
+    elif func == "file_absent":
+        return not (ROOT / args[0]).exists()
+    elif func == "file_contains":
+        p = ROOT / args[0]
+        return p.exists() and args[1] in p.read_text()
+    elif func == "file_missing_text":
+        p = ROOT / args[0]
+        return not p.exists() or args[1] not in p.read_text()
+    elif func == "command":
+        try:
+            subprocess.run(args[0], shell=True, cwd=ROOT, check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+    log(f"unknown check: {func}")
+    return False
+
+def next_task():
+    tasks = load_tasks()
+    done_map = {t["_path"].name: check_done(t["done"]) for t in tasks}
+    for t in tasks:
+        if done_map.get(t["_path"].name):
+            continue
+        parent = t["parent"]
+        if parent and not done_map.get(parent, False):
+            continue
+        return t
+    return None
+
+# --- claude runner ---
 
 def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
     import json as _json, threading
     claude = require_claude()
     if not claude:
-        return False
+        return False, None
     proc = subprocess.Popen(
         [claude, "--dangerously-skip-permissions", "-p", "--verbose",
          "--output-format", "stream-json",
@@ -130,7 +220,9 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
         start_new_session=True,
         cwd=ROOT,
     )
+    session_id = None
     def read_stream():
+        nonlocal session_id
         for raw in iter(proc.stdout.readline, b""):
             raw = raw.strip()
             if not raw:
@@ -164,7 +256,8 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
                         else:
                             log(f"\033[36m→ {name}\033[0m")
             elif t == "result":
-                cost = ev.get("total_cost_usd")
+                session_id = ev.get("session_id", session_id)
+                cost = ev.get("cost_usd") or ev.get("total_cost_usd")
                 dur = ev.get("duration_ms")
                 parts = []
                 if dur:
@@ -178,46 +271,52 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
     try:
         while reader.is_alive():
             reader.join(timeout=0.1)
-        return proc.wait() == 0
+        return proc.wait() == 0, session_id
     except KeyboardInterrupt:
         proc.kill()
         proc.wait()
         print()
         log("stopped")
-        return False
+        return False, session_id
+
+# --- main loop ---
 
 def run():
     claude = require_claude()
     if not claude:
         return
 
-    FACTORY.mkdir(exist_ok=True)
-    (FACTORY / "factory.pid").write_text(str(os.getpid()) + "\n")
+    TASKS_DIR.mkdir(exist_ok=True)
+    STATE_DIR.mkdir(exist_ok=True)
+    (STATE_DIR / "factory.pid").write_text(str(os.getpid()) + "\n")
 
-    if needs_bootstrap():
-        log("bootstrapping — reviewing source repo")
-        ok = run_claude(
-            "Read the CLAUDE.md in this directory. It contains a Bootstrap section "
-            "with instructions for your first task. Follow those instructions exactly. "
-            "All source code is already provided in the CLAUDE.md — do not explore the "
-            "source repo yourself. Just read CLAUDE.md, then write the replacement.",
-            allowed_tools="Read,Write,Edit,Bash"
-        )
+    while True:
+        task = next_task()
+        if task is None:
+            log("idle — waiting for tasks")
+            while next_task() is None:
+                time.sleep(5)
+            continue
+        name = task["name"]
+        log(f"task: {name}")
+        branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
+        update_task_meta(task, pid=str(os.getpid()), branch=branch)
+        ok, session_id = run_claude(task["prompt"], allowed_tools=task["tools"])
+        if session_id:
+            update_task_meta(task, session=session_id)
         if not ok:
-            log("bootstrap failed")
+            log(f"task failed: {name}")
             return
-        log("bootstrap complete")
-
-    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    i = 0
-    try:
-        while True:
-            print(f"\rfactory: {frames[i % len(frames)]}", end="", flush=True)
-            i += 1
-            time.sleep(0.08)
-    except KeyboardInterrupt:
-        print()
-        log("stopped")
+        if check_done(task["done"]):
+            try:
+                commit = sh("git", "rev-parse", "HEAD")
+                update_task_meta(task, commit=commit)
+            except Exception:
+                pass
+            log(f"task done: {name}")
+        else:
+            log(f"task did not complete: {name}")
+            return
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "init":
@@ -226,7 +325,7 @@ if __name__ == "__main__":
 PY
 chmod +x "$WORKTREE/$PY_NAME"
 
-# --- write bootstrap CLAUDE.md ---
+# --- write CLAUDE.md (metadata only) ---
 cat > "$WORKTREE/CLAUDE.md" <<CLAUDE
 # Factory
 
@@ -234,20 +333,30 @@ Automated software factory for \`$REPO\`.
 
 Source repo: \`$ROOT\`
 Worktree: \`$WORKTREE\`
-Runner: \`.git-factory/factory.py\`
-State: \`.git-factory/state/\`
+Runner: \`factory.py\`
+Tasks: \`tasks/\`
+State: \`state/\`
 
 You are a coding agent operating inside a git worktree on the \`factory\` branch.
 The source codebase lives at \`$ROOT\` — you can read it but must not write to it directly.
 All your work happens here in the worktree.
 
-**Important**: Never read or traverse into any \`.git-factory/\` directory in the source repo
-or this worktree. It contains the factory runtime and is not part of the codebase.
+**Important**: Never read or traverse into the \`.git-factory/\` directory in the source repo.
+It contains the factory runtime and is not part of the codebase.
+CLAUDE
 
-## Bootstrap
+# --- write bootstrap task ---
+cat > "$WORKTREE/tasks/2026-02-13-describe-source-repo-purpose-and-goals.md" <<'TASK'
+---
+tools: Read,Write,Edit,Bash
+done: section_exists("## Purpose")
+---
 
-Your first task is to read \`$ROOT/CLAUDE.md\` and \`$ROOT/README.md\` (if they
-exist), then replace this Bootstrap section with three sections: **Purpose**,
+Read `CLAUDE.md` in this directory, then read the source repo's `CLAUDE.md`
+and `README.md` (if they exist). The source repo path is in the CLAUDE.md
+header.
+
+Your task is to add three sections to this worktree's CLAUDE.md: **Purpose**,
 **Measures**, and **Tests**.
 
 Each section has three levels of abstraction: **Operational**, **Strategic**,
@@ -349,15 +458,23 @@ the operational purpose and measures directly. Examples:
 - Can a new contributor understand this change without extra context?
 - Does the error output tell the user what went wrong and what to do?
 
-After writing these sections, commit this file with the message
-\`factory: describe source repo purpose and goals\`.
-CLAUDE
+After writing these sections, commit CLAUDE.md with the message
+`factory: describe source repo purpose and goals`.
+TASK
+
+# --- install post-commit hook for worktree ---
+cat > "$WORKTREE/hooks/post-commit" <<'HOOK'
+#!/usr/bin/env bash
+echo -e "\033[33mfactory:\033[0m NEW COMMIT"
+HOOK
+chmod +x "$WORKTREE/hooks/post-commit"
+git -C "$WORKTREE" config core.hooksPath hooks
 
 # --- copy original installer into worktree and commit ---
-cp "$0" "$WORKTREE/.git-factory/factory.sh"
+cp "$0" "$WORKTREE/factory.sh"
 (
   cd "$WORKTREE"
-  git add -f CLAUDE.md "$PY_NAME" .git-factory/factory.sh
+  git add -f CLAUDE.md "$PY_NAME" factory.sh tasks/ hooks/ state/
   git commit -m "factory: bootstrap" >/dev/null 2>&1 || true
 )
 
@@ -386,7 +503,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
-PY_NAME=".git-factory/factory.py"
+PY_NAME="factory.py"
 
 if [[ "${1:-}" == "destroy" ]]; then
   echo "This will permanently remove:"
@@ -402,8 +519,8 @@ if [[ "${1:-}" == "destroy" ]]; then
   fi
 
   # restore factory.sh from the worktree commit before destroying
-  if [[ -f "$WORKTREE/.git-factory/factory.sh" ]]; then
-    cp "$WORKTREE/.git-factory/factory.sh" "$ROOT/factory.sh"
+  if [[ -f "$WORKTREE/factory.sh" ]]; then
+    cp "$WORKTREE/factory.sh" "$ROOT/factory.sh"
     echo -e "\033[33mfactory:\033[0m restored factory.sh"
   fi
 
