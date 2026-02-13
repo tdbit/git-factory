@@ -290,6 +290,11 @@ def run():
     STATE_DIR.mkdir(exist_ok=True)
     (STATE_DIR / "factory.pid").write_text(str(os.getpid()) + "\n")
 
+    def commit_task(task, message):
+        rel = task["_path"].relative_to(ROOT)
+        sh("git", "add", str(rel))
+        sh("git", "commit", "-m", message)
+
     while True:
         task = next_task()
         if task is None:
@@ -301,10 +306,12 @@ def run():
         log(f"task: {name}")
         branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
         update_task_meta(task, pid=str(os.getpid()), branch=branch)
+        commit_task(task, f"factory: start task — {name}")
         ok, session_id = run_claude(task["prompt"], allowed_tools=task["tools"])
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
+            commit_task(task, f"factory: task failed — {name}")
             log(f"task failed: {name}")
             return
         if check_done(task["done"]):
@@ -313,8 +320,10 @@ def run():
                 update_task_meta(task, commit=commit)
             except Exception:
                 pass
+            commit_task(task, f"factory: task done — {name}")
             log(f"task done: {name}")
         else:
+            commit_task(task, f"factory: task incomplete — {name}")
             log(f"task did not complete: {name}")
             return
 
@@ -346,7 +355,7 @@ It contains the factory runtime and is not part of the codebase.
 CLAUDE
 
 # --- write bootstrap task ---
-cat > "$WORKTREE/tasks/2026-02-13-describe-source-repo-purpose-and-goals.md" <<'TASK'
+cat > "$WORKTREE/tasks/$(date +%Y-%m-%d)-describe-source-repo-purpose-and-goals.md" <<'TASK'
 ---
 tools: Read,Write,Edit,Bash
 done: section_exists("## Purpose")
@@ -370,9 +379,9 @@ Keep all three levels concrete and software-focused. No philosophical or
 societal framing. Ground everything in what you observe in the actual repo.
 
 Bullet counts should expand as you move down the ladder:
-- Existential subsections: 3–5 bullets.
-- Strategic subsections: 5–10 bullets.
-- Operational subsections: 10–20 bullets.
+- Existential subsections: 3-5 bullets.
+- Strategic subsections: 5-10 bullets.
+- Operational subsections: 10-20 bullets.
 
 ---
 
@@ -380,7 +389,7 @@ Bullet counts should expand as you move down the ladder:
 
 The Purpose section defines what "better" means for this codebase.
 
-**Existential Purpose** (3–5 bullets) — Define why this software exists in
+**Existential Purpose** (3-5 bullets) — Define why this software exists in
 terms of the real-world outcome it produces. What is true for its users or its
 domain when this software is succeeding? If it's a tool for nurses: "Nurses
 spend more time with patients and less time on paperwork." If it's a developer
@@ -389,12 +398,12 @@ automation system: "Routine decisions happen without human intervention." Keep
 it concrete and tied to the people or problem the software serves. Do not
 describe the character of the codebase here — that belongs in strategic purpose.
 
-**Strategic Purpose** (5–10 bullets) — Define medium-term direction tied to
+**Strategic Purpose** (5-10 bullets) — Define medium-term direction tied to
 what you observe in the repo. Examples: reduce complexity in core paths,
 improve developer ergonomics, prefer explicitness over magic, strengthen
 invariants and contracts, eliminate sources of brittleness.
 
-**Operational Purpose** (10–20 bullets) — Define immediate, repo-specific
+**Operational Purpose** (10-20 bullets) — Define immediate, repo-specific
 priorities. Be concrete and name areas of the repo. Examples: simplify a
 confusing module, remove dead code, reduce test flakiness, improve error
 messages, clarify public APIs, reduce steps to run locally.
@@ -406,7 +415,7 @@ messages, clarify public APIs, reduce steps to run locally.
 The Measures section defines signals of progress. Every measure must include
 how it is observed — a command, a metric, or a concrete thing you can point at.
 
-**Existential Measures** (3–5 bullets) — Indicators that the software is
+**Existential Measures** (3-5 bullets) — Indicators that the software is
 fulfilling its reason for existing. These are not about code health — they are
 about the real-world outcome the system was built to produce. If the repo is a
 tool for healthcare nurses, examples might be: nurses spend less time on
@@ -415,11 +424,11 @@ If it's a developer tool: developers ship faster, debugging takes fewer steps,
 onboarding a new team member is easier. Tie these directly to the existential
 purpose — what would be true in the world if this software were succeeding?
 
-**Strategic Measures** (5–10 bullets) — Medium-term progress signals. Examples:
+**Strategic Measures** (5-10 bullets) — Medium-term progress signals. Examples:
 reduced complexity in core modules, faster test runs, fewer build steps,
 clearer documentation, less coupling between subsystems.
 
-**Operational Measures** (10–20 bullets) — Concrete, checkable signals tied
+**Operational Measures** (10-20 bullets) — Concrete, checkable signals tied
 directly to the operational purpose. Each one should answer: "How do I know
 this specific thing got better?" Examples: tests pass, lint clean, CI time
 decreased by N seconds, fewer TODOs in module X, setup runs in fewer steps,
@@ -433,17 +442,17 @@ under N ms.
 The Tests section contains "purpose gate" questions. Ask yourself these
 questions every time you make a change.
 
-**Existential Tests** (3–5 bullets) — Does this change move the needle on the
+**Existential Tests** (3-5 bullets) — Does this change move the needle on the
 real-world outcome the software exists to produce? Does it make the user's life
 concretely better? Would the person this software serves notice or care about
 this change? Does it bring the system closer to fulfilling its reason for
 existing?
 
-**Strategic Tests** (5–10 bullets) — Does this compound future improvements?
+**Strategic Tests** (5-10 bullets) — Does this compound future improvements?
 Does it reduce brittleness? Does it remove duplication? Does it improve
 clarity in the most-used paths?
 
-**Operational Tests** (10–20 bullets) — Specific, answerable questions about
+**Operational Tests** (10-20 bullets) — Specific, answerable questions about
 immediate outcomes. These should reference concrete commands, user actions, and
 the operational purpose and measures directly. Examples:
 
@@ -462,6 +471,17 @@ After writing these sections, commit CLAUDE.md with the message
 `factory: describe source repo purpose and goals`.
 TASK
 
+# --- copy .gitignore from source repo ---
+if [[ -f "$ROOT/.gitignore" ]]; then
+  cp "$ROOT/.gitignore" "$WORKTREE/.gitignore"
+fi
+
+# --- ignore state/ in worktree ---
+WORKTREE_GITIGNORE="$WORKTREE/.gitignore"
+if [[ ! -f "$WORKTREE_GITIGNORE" ]] || ! grep -qxF "state/" "$WORKTREE_GITIGNORE"; then
+  printf "\nstate/\n" >> "$WORKTREE_GITIGNORE"
+fi
+
 # --- install post-commit hook for worktree ---
 cat > "$WORKTREE/hooks/post-commit" <<'HOOK'
 #!/usr/bin/env bash
@@ -474,7 +494,7 @@ git -C "$WORKTREE" config core.hooksPath hooks
 cp "$0" "$WORKTREE/factory.sh"
 (
   cd "$WORKTREE"
-  git add -f CLAUDE.md "$PY_NAME" factory.sh tasks/ hooks/ state/
+  git add -f .gitignore CLAUDE.md "$PY_NAME" factory.sh tasks/ hooks/
   git commit -m "factory: bootstrap" >/dev/null 2>&1 || true
 )
 
