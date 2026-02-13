@@ -158,7 +158,7 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
                             detail = inp.get("pattern", "")
                         elif name == "Bash":
                             cmd = inp.get("command", "")
-                            detail = cmd[:60] + ("…" if len(cmd) > 60 else "")
+                            detail = cmd[:120] + ("…" if len(cmd) > 120 else "")
                         if detail:
                             log(f"\033[36m→ {name}\033[0m \033[2m{detail}\033[0m")
                         else:
@@ -226,30 +226,6 @@ if __name__ == "__main__":
 PY
 chmod +x "$WORKTREE/$PY_NAME"
 
-# --- snapshot source repo for bootstrap context ---
-SNAPSHOT="$(
-  echo '```'
-  echo "## File tree"
-  git ls-tree -r --name-only HEAD | grep -v '^\.' | head -100
-  echo ""
-  echo "## Commit history (last 500)"
-  git log --oneline -500
-  echo '```'
-)"
-
-# --- read all source files (non-binary, non-dot, <50KB) into a block ---
-SOURCE_CONTENTS="$(
-  echo '```'
-  git ls-tree -r --name-only HEAD | grep -v '^\.' | while read -r f; do
-    if [[ -f "$ROOT/$f" ]] && file -b --mime "$ROOT/$f" | grep -q 'text/' && [[ $(stat -f%z "$ROOT/$f" 2>/dev/null || stat -c%s "$ROOT/$f" 2>/dev/null) -lt 51200 ]]; then
-      echo "=== $f ==="
-      cat "$ROOT/$f"
-      echo ""
-    fi
-  done
-  echo '```'
-)"
-
 # --- write bootstrap CLAUDE.md ---
 cat > "$WORKTREE/CLAUDE.md" <<CLAUDE
 # Factory
@@ -268,23 +244,11 @@ All your work happens here in the worktree.
 **Important**: Never read or traverse into any \`.git-factory/\` directory in the source repo
 or this worktree. It contains the factory runtime and is not part of the codebase.
 
-## Source Repo Snapshot
-
-Everything you need to know about the source repo is below. **Do NOT explore
-the source repo yourself** — do not run find, ls, cat, git log, git show, or
-any other discovery commands against it. Use only what is provided here.
-
-$SNAPSHOT
-
-### Source File Contents
-
-$SOURCE_CONTENTS
-
 ## Bootstrap
 
-Your first task is to replace everything from \`## Source Repo Snapshot\` to the
-end of this file with three sections: **Purpose**, **Measures**, and **Tests**.
-Base your analysis entirely on the snapshot above. Do not explore the source repo.
+Your first task is to read \`$ROOT/CLAUDE.md\` and \`$ROOT/README.md\` (if they
+exist), then replace this Bootstrap section with three sections: **Purpose**,
+**Measures**, and **Tests**.
 
 Each section has three levels of abstraction: **Operational**, **Strategic**,
 and **Existential**.
