@@ -126,6 +126,8 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
          "--output-format", "stream-json",
          prompt, "--allowedTools", allowed_tools],
         stdout=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
         cwd=ROOT,
     )
     def read_stream():
@@ -180,6 +182,7 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
     except KeyboardInterrupt:
         proc.kill()
         proc.wait()
+        print()
         log("stopped")
         return False
 
@@ -207,10 +210,14 @@ def run():
 
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     i = 0
-    while True:
-        print(f"\rfactory: {frames[i % len(frames)]}", end="", flush=True)
-        i += 1
-        time.sleep(0.08)
+    try:
+        while True:
+            print(f"\rfactory: {frames[i % len(frames)]}", end="", flush=True)
+            i += 1
+            time.sleep(0.08)
+    except KeyboardInterrupt:
+        print()
+        log("stopped")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "init":
