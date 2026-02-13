@@ -6,27 +6,57 @@ cd "$ROOT"
 
 REPO="$(basename "$ROOT")"
 BRANCH="factory"
-FACTORY_DIR="${ROOT}/.factory"
+FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
-PY_NAME=".factory/factory.py"
+PY_NAME=".git-factory/factory.py"
 
-# --- ensure .factory dir is ignored locally ---
+# --- ensure .git-factory dir is ignored locally ---
+DEV_MODE=false
+if [[ "${1:-}" == "dev" ]]; then
+  DEV_MODE=true
+  shift
+fi
+
+# --- dev reset: tear down without restoring factory.sh ---
+dev_reset() {
+  if [[ -d "$WORKTREE" ]]; then
+    git worktree remove --force "$WORKTREE" 2>/dev/null || rm -rf "$WORKTREE"
+  fi
+  rm -rf "$FACTORY_DIR"
+  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git branch -D "$BRANCH" >/dev/null 2>&1 || true
+  fi
+  rm -f "$ROOT/factory"
+}
+
+if [[ "$DEV_MODE" == true ]] && [[ "${1:-}" == "reset" ]]; then
+  dev_reset
+  echo -e "\033[33mfactory:\033[0m reset"
+  exit 0
+fi
+
+# --- dev mode: always start fresh ---
+if [[ "$DEV_MODE" == true ]] && [[ -d "$FACTORY_DIR" ]]; then
+  echo -e "\033[33mfactory:\033[0m resetting"
+  dev_reset
+fi
+
 EXCLUDE_FILE="$ROOT/.git/info/exclude"
 mkdir -p "$(dirname "$EXCLUDE_FILE")"
 touch "$EXCLUDE_FILE"
-if ! grep -qxF "/.factory/" "$EXCLUDE_FILE"; then
-  printf "\n/.factory/\n" >> "$EXCLUDE_FILE"
+if ! grep -qxF "/.git-factory/" "$EXCLUDE_FILE"; then
+  printf "\n/.git-factory/\n" >> "$EXCLUDE_FILE"
 fi
 
 # --- create factory branch if missing ---
 if ! git show-ref --verify --quiet "refs/heads/$BRANCH"; then
   git branch "$BRANCH"
-  echo "factory: created branch $BRANCH"
+  echo -e "\033[33mfactory:\033[0m created branch $BRANCH"
 fi
 
 # --- resume existing worktree or create fresh ---
-if [[ -d "$WORKTREE" ]] && [[ -f "$WORKTREE/$PY_NAME" ]]; then
-  echo "factory: resuming"
+if [[ "$DEV_MODE" == false ]] && [[ -d "$WORKTREE" ]] && [[ -f "$WORKTREE/$PY_NAME" ]]; then
+  echo -e "\033[33mfactory:\033[0m resuming"
   cd "$WORKTREE"
   exec python3 "$PY_NAME"
 fi
@@ -40,16 +70,19 @@ fi
 git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
 
 # --- write minimal python runner into worktree ---
-mkdir -p "$WORKTREE/.factory"
+mkdir -p "$WORKTREE/.git-factory"
 cat > "$WORKTREE/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
 import os, sys, signal, time, shutil, subprocess
 from pathlib import Path
 
-signal.signal(signal.SIGINT, lambda *_: (print("\rfactory: stopped"), sys.exit(0)))
+signal.signal(signal.SIGINT, lambda *_: (print("\r\033[33mfactory:\033[0m stopped"), sys.exit(0)))
 
 ROOT = Path(__file__).resolve().parents[1]
-FACTORY = ROOT / ".factory"
+FACTORY = ROOT / ".git-factory"
+
+def log(msg):
+    print(f"\033[33mfactory:\033[0m {msg}", flush=True)
 
 def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
@@ -58,7 +91,7 @@ def require_claude():
     """Return path to claude CLI, or None if not found."""
     path = shutil.which("claude")
     if not path:
-        print("factory: claude not found on PATH")
+        log("claude not found on PATH")
         return None
     return path
 
@@ -69,7 +102,7 @@ def init():
 
     branch = sh("git","rev-parse","--abbrev-ref","HEAD")
     if branch != "factory":
-        print("factory: not on factory branch:", branch)
+        log(f"not on factory branch: {branch}")
         return 2
 
     (FACTORY / "state").mkdir(parents=True, exist_ok=True)
@@ -84,20 +117,54 @@ def needs_bootstrap():
     return "## Bootstrap" in claude_md.read_text()
 
 def run_claude(prompt):
+    import json as _json, threading
     claude = require_claude()
     if not claude:
         return False
     proc = subprocess.Popen(
-        [claude, "-p", prompt, "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep"],
+        [claude, "--dangerously-skip-permissions", "-p", "--verbose",
+         "--output-format", "stream-json",
+         prompt, "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep"],
+        stdout=subprocess.PIPE,
         cwd=ROOT,
     )
+    def read_stream():
+        for raw in iter(proc.stdout.readline, b""):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                ev = _json.loads(raw)
+            except ValueError:
+                continue
+            t = ev.get("type", "")
+            if t == "assistant":
+                for block in ev.get("message", {}).get("content", []):
+                    if block.get("type") == "tool_use":
+                        name = block.get("name", "")
+                        if name:
+                            log(f"\033[36m→ {name}\033[0m")
+            elif t == "result":
+                cost = ev.get("total_cost_usd")
+                dur = ev.get("duration_ms")
+                parts = []
+                if dur:
+                    parts.append(f"{dur/1000:.1f}s")
+                if cost:
+                    parts.append(f"${cost:.4f}")
+                if parts:
+                    log("\033[2m" + ", ".join(parts) + "\033[0m")
+    reader = threading.Thread(target=read_stream, daemon=True)
+    reader.start()
     try:
+        while reader.is_alive():
+            reader.join(timeout=0.1)
         return proc.wait() == 0
     except KeyboardInterrupt:
-        proc.terminate()
+        proc.kill()
         proc.wait()
-        print("\rfactory: stopped")
-        sys.exit(0)
+        log("stopped")
+        return False
 
 def run():
     claude = require_claude()
@@ -108,15 +175,15 @@ def run():
     (FACTORY / "factory.pid").write_text(str(os.getpid()) + "\n")
 
     if needs_bootstrap():
-        print("factory: bootstrapping — reviewing source repo")
+        log("bootstrapping — reviewing source repo")
         ok = run_claude(
             "Read the CLAUDE.md in this directory. It contains a Bootstrap section "
             "with instructions for your first task. Follow those instructions exactly."
         )
         if not ok:
-            print("factory: bootstrap failed")
+            log("bootstrap failed")
             return
-        print("factory: bootstrap complete")
+        log("bootstrap complete")
 
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     i = 0
@@ -140,14 +207,14 @@ Automated software factory for \`$REPO\`.
 
 Source repo: \`$ROOT\`
 Worktree: \`$WORKTREE\`
-Runner: \`.factory/factory.py\`
-State: \`.factory/state/\`
+Runner: \`.git-factory/factory.py\`
+State: \`.git-factory/state/\`
 
 You are a coding agent operating inside a git worktree on the \`factory\` branch.
 The source codebase lives at \`$ROOT\` — you can read it but must not write to it directly.
 All your work happens here in the worktree.
 
-**Important**: Never read or traverse into any \`.factory/\` directory in the source repo
+**Important**: Never read or traverse into any \`.git-factory/\` directory in the source repo
 or this worktree. It contains the factory runtime and is not part of the codebase.
 
 ## Bootstrap
@@ -259,10 +326,10 @@ After writing these sections, commit this file with the message
 CLAUDE
 
 # --- copy original installer into worktree and commit ---
-cp "$0" "$WORKTREE/.factory/factory.sh"
+cp "$0" "$WORKTREE/.git-factory/factory.sh"
 (
   cd "$WORKTREE"
-  git add -f CLAUDE.md "$PY_NAME" .factory/factory.sh
+  git add -f CLAUDE.md "$PY_NAME" .git-factory/factory.sh
   git commit -m "factory: bootstrap" >/dev/null 2>&1 || true
 )
 
@@ -270,9 +337,15 @@ cp "$0" "$WORKTREE/.factory/factory.sh"
 (
   cd "$WORKTREE"
   python3 "$PY_NAME" init
-) || { echo "factory: init failed — aborting"; git worktree remove --force "$WORKTREE" 2>/dev/null || true; exit 1; }
+) || { echo -e "\033[33mfactory:\033[0m init failed — aborting"; git worktree remove --force "$WORKTREE" 2>/dev/null || true; exit 1; }
 
-# --- replace this installer with a launcher script ---
+# --- replace this installer with a launcher script (skip in dev mode) ---
+if [[ "$DEV_MODE" == true ]]; then
+  echo -e "\033[33mfactory:\033[0m dev mode — worktree at .git-factory/worktree"
+  cd "$WORKTREE"
+  exec python3 "$PY_NAME"
+fi
+
 SCRIPT_PATH="$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$0")"
 LAUNCHER="$ROOT/factory"
 if [[ "$SCRIPT_PATH" == "$ROOT"* ]] && [[ "$SCRIPT_PATH" != "$LAUNCHER" ]]; then
@@ -283,45 +356,45 @@ cat > "$LAUNCHER" <<'LAUNCH'
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-FACTORY_DIR="${ROOT}/.factory"
+FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
-PY_NAME=".factory/factory.py"
+PY_NAME=".git-factory/factory.py"
 
 if [[ "${1:-}" == "destroy" ]]; then
   echo "This will permanently remove:"
-  echo "  - .factory/ (worktree + state)"
+  echo "  - .git-factory/ (worktree + state)"
   echo "  - factory branch"
   echo "  - ./factory launcher"
   echo ""
   printf "Type 'yes' to confirm: "
   read -r confirm
   if [[ "$confirm" != "yes" ]]; then
-    echo "factory: destroy cancelled"
+    echo -e "\033[33mfactory:\033[0m destroy cancelled"
     exit 1
   fi
 
   # restore factory.sh from the worktree commit before destroying
-  if [[ -f "$WORKTREE/.factory/factory.sh" ]]; then
-    cp "$WORKTREE/.factory/factory.sh" "$ROOT/factory.sh"
-    echo "factory: restored factory.sh"
+  if [[ -f "$WORKTREE/.git-factory/factory.sh" ]]; then
+    cp "$WORKTREE/.git-factory/factory.sh" "$ROOT/factory.sh"
+    echo -e "\033[33mfactory:\033[0m restored factory.sh"
   fi
 
-  # remove worktree then .factory dir
+  # remove worktree then .git-factory dir
   if [[ -d "$WORKTREE" ]]; then
     git worktree remove --force "$WORKTREE" 2>/dev/null || rm -rf "$WORKTREE"
   fi
   rm -rf "$FACTORY_DIR"
-  echo "factory: removed .factory/"
+  echo -e "\033[33mfactory:\033[0m removed .git-factory/"
 
   # delete factory branches
   if git show-ref --verify --quiet "refs/heads/factory"; then
     git branch -D factory >/dev/null 2>&1 || true
-    echo "factory: deleted 'factory' branch"
+    echo -e "\033[33mfactory:\033[0m deleted 'factory' branch"
   fi
 
   # remove this launcher
   rm -f "$ROOT/factory"
-  echo "factory: destroyed"
+  echo -e "\033[33mfactory:\033[0m destroyed"
   exit 0
 fi
 
@@ -335,8 +408,8 @@ if ! grep -qxF "/factory" "$EXCLUDE_FILE"; then
   printf "\n/factory\n" >> "$EXCLUDE_FILE"
 fi
 
-echo "factory: worktree at .factory/worktree"
-echo "factory: run ./factory to start"
+echo -e "\033[33mfactory:\033[0m worktree at .git-factory/worktree"
+echo -e "\033[33mfactory:\033[0m run ./factory to start"
 
 # --- run in foreground so user sees output ---
 cd "$WORKTREE"
