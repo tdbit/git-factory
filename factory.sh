@@ -76,7 +76,7 @@ cat > "$WORKTREE/$PY_NAME" <<'PY'
 import os, sys, signal, time, shutil, subprocess
 from pathlib import Path
 
-signal.signal(signal.SIGINT, lambda *_: (print("\r\033[33mfactory:\033[0m stopped"), sys.exit(0)))
+signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 ROOT = Path(__file__).resolve().parents[1]
 FACTORY = ROOT / ".git-factory"
@@ -116,7 +116,7 @@ def needs_bootstrap():
         return True
     return "## Bootstrap" in claude_md.read_text()
 
-def run_claude(prompt):
+def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
     import json as _json, threading
     claude = require_claude()
     if not claude:
@@ -124,7 +124,7 @@ def run_claude(prompt):
     proc = subprocess.Popen(
         [claude, "--dangerously-skip-permissions", "-p", "--verbose",
          "--output-format", "stream-json",
-         prompt, "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep"],
+         prompt, "--allowedTools", allowed_tools],
         stdout=subprocess.PIPE,
         cwd=ROOT,
     )
@@ -142,7 +142,24 @@ def run_claude(prompt):
                 for block in ev.get("message", {}).get("content", []):
                     if block.get("type") == "tool_use":
                         name = block.get("name", "")
-                        if name:
+                        if not name:
+                            continue
+                        inp = block.get("input", {})
+                        detail = ""
+                        if name in ("Read", "Write", "Edit"):
+                            fp = inp.get("file_path", "")
+                            if fp:
+                                detail = fp.rsplit("/", 1)[-1]
+                        elif name == "Glob":
+                            detail = inp.get("pattern", "")
+                        elif name == "Grep":
+                            detail = inp.get("pattern", "")
+                        elif name == "Bash":
+                            cmd = inp.get("command", "")
+                            detail = cmd[:60] + ("…" if len(cmd) > 60 else "")
+                        if detail:
+                            log(f"\033[36m→ {name}\033[0m \033[2m{detail}\033[0m")
+                        else:
                             log(f"\033[36m→ {name}\033[0m")
             elif t == "result":
                 cost = ev.get("total_cost_usd")
@@ -178,7 +195,10 @@ def run():
         log("bootstrapping — reviewing source repo")
         ok = run_claude(
             "Read the CLAUDE.md in this directory. It contains a Bootstrap section "
-            "with instructions for your first task. Follow those instructions exactly."
+            "with instructions for your first task. Follow those instructions exactly. "
+            "All source code is already provided in the CLAUDE.md — do not explore the "
+            "source repo yourself. Just read CLAUDE.md, then write the replacement.",
+            allowed_tools="Read,Write,Edit,Bash"
         )
         if not ok:
             log("bootstrap failed")
@@ -199,6 +219,30 @@ if __name__ == "__main__":
 PY
 chmod +x "$WORKTREE/$PY_NAME"
 
+# --- snapshot source repo for bootstrap context ---
+SNAPSHOT="$(
+  echo '```'
+  echo "## File tree"
+  git ls-tree -r --name-only HEAD | grep -v '^\.' | head -100
+  echo ""
+  echo "## Commit history (last 500)"
+  git log --oneline -500
+  echo '```'
+)"
+
+# --- read all source files (non-binary, non-dot, <50KB) into a block ---
+SOURCE_CONTENTS="$(
+  echo '```'
+  git ls-tree -r --name-only HEAD | grep -v '^\.' | while read -r f; do
+    if [[ -f "$ROOT/$f" ]] && file -b --mime "$ROOT/$f" | grep -q 'text/' && [[ $(stat -f%z "$ROOT/$f" 2>/dev/null || stat -c%s "$ROOT/$f" 2>/dev/null) -lt 51200 ]]; then
+      echo "=== $f ==="
+      cat "$ROOT/$f"
+      echo ""
+    fi
+  done
+  echo '```'
+)"
+
 # --- write bootstrap CLAUDE.md ---
 cat > "$WORKTREE/CLAUDE.md" <<CLAUDE
 # Factory
@@ -217,10 +261,23 @@ All your work happens here in the worktree.
 **Important**: Never read or traverse into any \`.git-factory/\` directory in the source repo
 or this worktree. It contains the factory runtime and is not part of the codebase.
 
+## Source Repo Snapshot
+
+Everything you need to know about the source repo is below. **Do NOT explore
+the source repo yourself** — do not run find, ls, cat, git log, git show, or
+any other discovery commands against it. Use only what is provided here.
+
+$SNAPSHOT
+
+### Source File Contents
+
+$SOURCE_CONTENTS
+
 ## Bootstrap
-Your first task is to review the source repo and replace the Bootstrap section
-in this CLAUDE.md file with three sections: **Purpose**, **Measures**, and
-**Tests**. These sections will guide all future work, so write them carefully.
+
+Your first task is to replace everything from \`## Source Repo Snapshot\` to the
+end of this file with three sections: **Purpose**, **Measures**, and **Tests**.
+Base your analysis entirely on the snapshot above. Do not explore the source repo.
 
 Each section has three levels of abstraction: **Operational**, **Strategic**,
 and **Existential**.
