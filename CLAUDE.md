@@ -14,7 +14,7 @@ bash factory.sh dev reset    # tear down only
 
 ## Architecture
 
-Everything lives in a single file: `factory.sh` (bash installer + embedded Python runner). No external dependencies beyond `claude`, `git`, `python3`, and `bash`.
+Everything lives in a single file: `factory.sh` (bash installer + embedded Python runner). No external dependencies beyond `claude` (or `claude-code`), `git`, `python3`, and `bash`.
 
 - `factory.sh` creates a `factory` branch and a git worktree at `.git-factory/worktree/`
 - The embedded Python runner (`factory.py`) is extracted into the worktree

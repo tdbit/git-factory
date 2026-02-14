@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
+# --- dependency checks ---
+for cmd in git python3; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo -e "\033[31mfactory:\033[0m error: '$cmd' is not installed." >&2
+    exit 1
+  fi
+done
+
 REPO="$(basename "$ROOT")"
 BRANCH="factory"
 FACTORY_DIR="${ROOT}/.git-factory"
@@ -19,6 +27,12 @@ fi
 
 # --- dev reset: tear down without restoring factory.sh ---
 dev_reset() {
+  # safety check: ensure FACTORY_DIR looks right
+  if [[ -z "$FACTORY_DIR" ]] || [[ "$FACTORY_DIR" != *".git-factory" ]]; then
+    echo "Error: unsafe FACTORY_DIR: $FACTORY_DIR"
+    exit 1
+  fi
+
   if [[ -d "$WORKTREE" ]]; then
     git worktree remove --force "$WORKTREE" 2>/dev/null || rm -rf "$WORKTREE"
   fi
@@ -73,7 +87,7 @@ git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
 mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state"
 cat > "$WORKTREE/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
-import os, sys, re, signal, time, shutil, subprocess
+import os, sys, re, signal, time, shutil, subprocess, ast
 from pathlib import Path
 
 signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -89,11 +103,12 @@ def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
 
 def require_claude():
-    path = shutil.which("claude")
-    if not path:
-        log("claude not found on PATH")
-        return None
-    return path
+    for cmd in ("claude", "claude-code"):
+        path = shutil.which(cmd)
+        if path:
+            return path
+    log("claude (or claude-code) not found on PATH")
+    return None
 
 def init():
     claude = require_claude()
@@ -200,7 +215,18 @@ def check_one_condition(cond):
         log(f"unknown condition: {cond}")
         return False
     func, raw_args = m.group(1), m.group(2)
-    args = re.findall(r'"([^"]*)"', raw_args)
+    try:
+        # treat raw_args as a tuple of strings, e.g. "param1", "param2"
+        # wrap in parens to ensure it parses as a tuple even if single arg
+        if not raw_args.strip():
+            args = []
+        else:
+            # parsing "foo", "bar" by wrapping in parens -> ("foo", "bar")
+            parsed = ast.literal_eval(f"({raw_args})")
+            args = [parsed] if isinstance(parsed, str) else list(parsed)
+    except (ValueError, SyntaxError):
+        log(f"check parse error: {cond}")
+        return False
     if func == "section_exists":
         text = (ROOT / "CLAUDE.md").read_text() if (ROOT / "CLAUDE.md").exists() else ""
         return args[0] in text
