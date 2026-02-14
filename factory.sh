@@ -244,6 +244,7 @@ def parse_task(path):
     return {
         "name": name,
         "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
+        "status": meta.get("status", ""),
         "agent": meta.get("agent", ""),
         "parent": meta.get("parent", ""),
         "previous": meta.get("previous", ""),
@@ -358,8 +359,10 @@ def check_done_details(done):
 
 def next_task():
     tasks = load_tasks()
-    done_map = {t["_path"].name: check_done(t["done"]) for t in tasks}
-    for t in tasks:
+    # skip tasks that are terminal — completed/stopped live in git history
+    eligible = [t for t in tasks if t["status"] not in ("completed", "stopped")]
+    done_map = {t["_path"].name: check_done(t["done"]) for t in eligible}
+    for t in eligible:
         if done_map.get(t["_path"].name):
             continue
         prev = t.get("previous", "").removeprefix("tasks/")
