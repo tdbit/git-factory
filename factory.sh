@@ -14,28 +14,19 @@ EXCLUDE_FILE="$ROOT/.git/info/exclude"
 
 # --- detect provider ---
 PROVIDER=""
-case "${1:-}" in
-  claude|codex) PROVIDER="$1"; shift ;;
-esac
+case "${1:-}" in claude|codex) PROVIDER="$1"; shift ;; esac
 if [[ -z "$PROVIDER" ]]; then
   for try in claude claude-code codex; do
-    if command -v "$try" >/dev/null 2>&1; then
-      PROVIDER="$try"
-      break
-    fi
+    command -v "$try" >/dev/null 2>&1 && PROVIDER="$try" && break
   done
 fi
 
 # --- detect default branch ---
 DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')" || true
 if [[ -z "$DEFAULT_BRANCH" ]]; then
-  if git show-ref --verify --quiet refs/heads/main; then
-    DEFAULT_BRANCH="main"
-  elif git show-ref --verify --quiet refs/heads/master; then
-    DEFAULT_BRANCH="master"
-  else
-    DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-  fi
+  git show-ref --verify --quiet refs/heads/main && DEFAULT_BRANCH="main" ||
+  git show-ref --verify --quiet refs/heads/master && DEFAULT_BRANCH="master" ||
+  DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 fi
 
 # --- check dependencies ---
@@ -1357,25 +1348,18 @@ ensure_excluded() {
 bootstrap() {
   # directories
   mkdir -p "$FACTORY_DIR"
-  for d in tasks hooks state agents initiatives projects logs; do
+  for d in tasks hooks state agents initiatives projects logs worktrees; do
     mkdir -p "$FACTORY_DIR/$d"
   done
-  mkdir -p "$PROJECT_WORKTREES"
 
   # content
-  cat > "$FACTORY_DIR/config.json" <<CONF
-{"default_branch": "$DEFAULT_BRANCH", "project_worktrees": "$PROJECT_WORKTREES", "provider": "$PROVIDER"}
-CONF
+  cp "$0" "$FACTORY_DIR/factory.sh"
+  printf '%s\n' state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$FACTORY_DIR/.gitignore"
+  printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$FACTORY_DIR/config.json"
   write_runner
   write_claude_md
   write_bootstrap_task
   write_hook
-  cat > "$FACTORY_DIR/.gitignore" <<'GI'
-state/
-logs/
-worktrees/
-GI
-  cp "$0" "$FACTORY_DIR/factory.sh"
 
   # git
   git init "$FACTORY_DIR" >/dev/null 2>&1
