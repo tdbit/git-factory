@@ -1,6 +1,6 @@
 # git-factory
 
-An autonomous software factory powered by AI coding agents. Drop `factory.sh` into any git repo, run it, and an agent bootstraps itself into an isolated worktree where it analyzes, plans, and improves your codebase continuously.
+An autonomous software factory powered by AI coding agents. Drop `factory.sh` into any git repo, run it, and an agent bootstraps itself into an isolated `.factory/` directory where it continuously analyzes, plans, and improves the codebase.
 
 Supports **Claude Code** (`claude` / `claude-code`) and **Codex** (`codex`) — the first agent CLI found on `PATH` is used automatically.
 
@@ -15,7 +15,6 @@ bash factory.sh
 First run bootstraps the agent, then prints:
 
 ```
-factory: worktree at .git-factory/worktree
 factory: run ./factory to start
 ```
 
@@ -23,28 +22,31 @@ After that, just run `./factory` to resume.
 
 ## How it works
 
-1. `factory.sh` creates a `factory/{repo}` branch and a git worktree at `.git-factory/worktree/`
-2. It writes a Python runner (`factory.py`) and a `CLAUDE.md` into the worktree
+1. `factory.sh` creates `.factory/` as a standalone git repo (via `git init`) for factory metadata
+2. It writes a Python runner (`factory.py`), a `CLAUDE.md`, and a bootstrap task into `.factory/`
 3. The runner launches the agent CLI in headless mode (Claude uses `--dangerously-skip-permissions`; Codex uses `exec --json`)
 4. On first run, the agent reads your repo's `CLAUDE.md` and `README.md`, then writes Purpose, Measures, and Tests sections that guide all future work
 5. After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
+6. For project tasks that modify source code, the runner creates git worktrees under `.factory/worktrees/` on `factory/*` branches in the source repo
 
-The factory branch is isolated — the agent can read your source repo but only writes to its own worktree. Your working tree stays clean.
+The factory is isolated — `.factory/` is locally ignored via `.git/info/exclude` (never pollutes tracked files). Project worktrees give the agent its own branches to work on without touching your working tree.
 
 ```
 your-repo/
   factory.sh            # one-shot installer
   ./factory             # launcher (replaces factory.sh after bootstrap)
-  .git-factory/         # created at runtime, locally git-ignored
-    worktree/           # git worktree on the factory/{repo} branch
-      CLAUDE.md         # agent's operating instructions
-      factory.py        # python orchestrator
-      agents/           # agent persona definitions (markdown)
-      initiatives/      # high-level goals (YYYY-slug.md)
-      projects/         # mid-level projects (YYYY-MM-slug.md)
-      tasks/            # task queue (YYYY-MM-DD-slug.md)
-      hooks/            # git hooks for the worktree
-      state/            # runtime state (pid, cli path, init timestamp)
+  .factory/             # standalone git repo, locally git-ignored
+    factory.py          # python orchestrator
+    CLAUDE.md           # agent's operating instructions
+    config.json         # bootstrap config (provider, default branch, worktrees path)
+    agents/             # agent persona definitions (markdown)
+    initiatives/        # high-level goals (YYYY-slug.md)
+    projects/           # mid-level projects (YYYY-MM-slug.md)
+    tasks/              # task queue (YYYY-MM-DD-slug.md)
+    hooks/              # git hooks for the factory repo
+    state/              # runtime state (pid, run logs)
+    logs/               # agent run logs
+    worktrees/          # source repo worktrees for project tasks
 ```
 
 ## Work hierarchy
@@ -93,7 +95,7 @@ When no ready task exists, the runner automatically invokes a built-in **plannin
 1. Checks scarcity invariants
 2. Promotes or creates initiatives / projects as needed
 3. Creates exactly **one** new task per planning run
-4. Commits the task file to the worktree
+4. Commits the task file to the factory repo
 
 The planning agent follows strict rules: prefer refinement over creation, never create parallel structure, and produce tasks that are atomic and completable in a single agent session.
 
@@ -143,8 +145,8 @@ Runner-managed (set automatically):
 - **stop_reason** — required when `status: stopped` (e.g. `failed`)
 - **pid** — process ID of the runner
 - **session** — agent session ID
-- **branch** — git branch the task ran on
-- **commit** — HEAD commit hash when the task completed
+- **commit** — HEAD commit hash when a factory task completed
+- **project_commit** — HEAD commit hash when a project task completed
 
 ### Completion conditions
 
@@ -152,8 +154,8 @@ Listed in the `## Done` section, one per line. All must pass.
 
 | Condition | Passes when |
 |---|---|
-| `section_exists("text")` | text appears in `CLAUDE.md` |
-| `no_section("text")` | text does not appear in `CLAUDE.md` |
+| `section_exists("text")` | text appears in `.factory/CLAUDE.md` |
+| `no_section("text")` | text does not appear in `.factory/CLAUDE.md` |
 | `file_exists("path")` | file exists in the worktree |
 | `file_absent("path")` | file does not exist |
 | `file_contains("path", "text")` | file exists and contains text |
@@ -198,7 +200,7 @@ bash factory.sh reset        # tear down only
 ./factory destroy
 ```
 
-Removes `.git-factory/`, deletes the `factory/{repo}` branch, restores the original `factory.sh`, and removes the `./factory` launcher. Prompts for confirmation.
+Removes `.factory/`, deletes `factory/*` project branches, restores the original `factory.sh`, and removes the `./factory` launcher. Prompts for confirmation.
 
 ## Configuration
 
@@ -210,7 +212,7 @@ All configuration is via environment variables — no config files.
 | `FACTORY_CODEX_MODEL` | `gpt-5.2-codex` | Override the Codex model |
 | `FACTORY_CODEX_MODEL_FALLBACKS` | `gpt-5-codex,o3` | Comma-separated fallback models for Codex |
 | `FACTORY_HEARTBEAT_SEC` | `15` | Seconds between heartbeat messages during Codex runs |
-| `FACTORY_BRANCH` | `factory/{repo}` | Override the factory branch name |
+| `FACTORY_TIMEOUT_SEC` | `0` (disabled) | Kill agent after N seconds |
 
 ## Requirements
 
@@ -223,20 +225,20 @@ No other dependencies. Everything is self-contained in `factory.sh`.
 
 ## How the agent operates
 
-The agent's behavior is defined by the `CLAUDE.md` in the worktree. After bootstrap, this file contains:
+The agent's behavior is defined by `.factory/CLAUDE.md`. After bootstrap, this file contains:
 
 - **Purpose** — what "better" means for your codebase, at existential, strategic, and tactical levels
 - **Measures** — observable signals of progress, each with a way to check it
 - **Tests** — gate questions the agent asks before every change
 
-The agent reads your source repo's `CLAUDE.md` and `README.md` to understand what it's working with, then writes these sections based on what it finds.
+The agent reads the source repo's `CLAUDE.md` and `README.md` to understand what it's working with, then writes these sections based on what it finds.
 
 ## Design decisions
 
-- **Git worktree isolation** — the agent works on its own branch in its own directory. Your working tree and branch are never touched.
-- **Multi-agent CLI support** — automatically detects and uses `codex`, `claude`, or `claude-code` (first found on `PATH`). Codex gets model fallback with retries.
+- **Standalone factory repo** — `.factory/` is its own git repo for metadata. Project worktrees give the agent isolated branches in the source repo. Your working tree and branch are never touched.
+- **Multi-agent CLI support** — automatically detects and uses `claude`, `claude-code`, or `codex` (first found on `PATH`). Codex gets model fallback with retries.
 - **No config files** — everything is self-contained in `factory.sh`. No `.env`, no `config.yaml`, no external dependencies beyond an agent CLI + git + python.
-- **Self-replacing installer** — `factory.sh` is a one-shot installer that replaces itself with a tiny launcher script. The original is preserved in the worktree for `./factory destroy` to restore.
+- **Self-replacing installer** — `factory.sh` is a one-shot installer that replaces itself with a tiny launcher script. The original is preserved in `.factory/` for `./factory destroy` to restore.
 - **Headless agents** — Claude runs with `--dangerously-skip-permissions` in print mode; Codex runs with `exec --json`. No interactive prompts, no TUI.
 - **Local-only git ignore** — uses `.git/info/exclude` instead of `.gitignore` so factory artifacts never pollute your repo's tracked files.
 - **Autonomous planning** — when no tasks are ready, a built-in planning agent creates the next task following scarcity invariants, ensuring the factory always has work.

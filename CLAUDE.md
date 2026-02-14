@@ -37,7 +37,7 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/projects/` | Mid-level projects (YYYY-MM-slug.md) |
 | `.factory/tasks/` | Task queue (markdown files with YAML frontmatter) |
 | `.factory/config.json` | Bootstrap config (provider, default branch, worktrees path) |
-| `.factory/state/` | Runtime state (pid, init timestamp) |
+| `.factory/state/` | Runtime state (pid file, last run log) |
 | `.factory/logs/` | Agent run logs |
 | `.factory/worktrees/` | Source repo worktrees for project tasks |
 
@@ -45,18 +45,20 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 
 `factory.sh` is structured as:
 
-1. **Constants** — `ROOT`, `FACTORY_DIR`, `PROVIDER`, `DEFAULT_BRANCH`
-2. **Dependencies** — provider detection, `python3` check
-3. **Functions**:
+1. **Constants** — `NOISES`, `ROOT`, `FACTORY_DIR`, `PROJECT_WORKTREES`, `PY_NAME`, `EXCLUDE_FILE`
+2. **Provider detection** — first arg (`claude`/`codex`) or auto-detect from PATH
+3. **Default branch detection** — from `origin/HEAD`, falling back to `main`/`master`/`HEAD`
+4. **Dependency checks** — `PROVIDER` and `python3`
+5. **Functions**:
    - `teardown()` — remove `.factory/`, worktrees, `factory/*` branches
-   - `write_runner()` — embedded `factory.py` (~930 lines)
+   - `write_runner()` — embedded `factory.py` (~880 lines)
    - `write_claude_md()` — agent operating instructions template
    - `write_bootstrap_task()` — initial `define-purpose` task
    - `write_launcher()` — `./factory` launcher script
    - `write_hook()` — post-commit hook
    - `ensure_excluded()` — add `.factory/` to `.git/info/exclude`
-   - `bootstrap()` — create dirs, write content, git init + commit, python init
-4. **Command dispatch** — `case` handles `reset`, `dev`, default (resume/bootstrap)
+   - `bootstrap()` — create dirs, write content, git init + commit
+6. **Command dispatch** — `case` handles `reset`, `dev`, default (resume/bootstrap)
 
 ## Task system
 
@@ -66,8 +68,8 @@ Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each has YAML f
 
 | Condition | Passes when |
 |---|---|
-| `section_exists("text")` | text appears in worktree `CLAUDE.md` |
-| `no_section("text")` | text does not appear in worktree `CLAUDE.md` |
+| `section_exists("text")` | text appears in `.factory/CLAUDE.md` |
+| `no_section("text")` | text does not appear in `.factory/CLAUDE.md` |
 | `file_exists("path")` | file exists in the worktree |
 | `file_absent("path")` | file does not exist |
 | `file_contains("path", "text")` | file exists and contains text |
