@@ -5,16 +5,17 @@ Autonomous software factory that embeds a Claude Code agent inside a git repo. A
 ## Quick reference
 
 ```bash
-bash factory.sh              # first run: bootstrap
+bash factory.sh              # first run: bootstrap + run
+bash factory.sh [claude|codex]  # bootstrap with explicit provider
 ./factory                    # resume
-bash factory.sh dev          # dev mode: reset + bootstrap + run
-bash factory.sh dev reset    # tear down only
+bash factory.sh dev          # reset + bootstrap + run (no launcher)
+bash factory.sh reset        # tear down only
 ./factory destroy            # remove everything, restore factory.sh
 ```
 
 ## Architecture
 
-Everything lives in a single file: `factory.sh` (bash installer + embedded Python runner). No external dependencies beyond `claude` (or `claude-code`), `git`, `python3`, and `bash`.
+Everything lives in a single file: `factory.sh` (bash installer + embedded Python runner). No external dependencies beyond an agent CLI (`claude`, `claude-code`, or `codex`), `git`, `python3`, and `bash`.
 
 - `factory.sh` creates `.factory/` as a standalone git repo (via `git init`)
 - The embedded Python runner (`factory.py`) is extracted into `.factory/`
@@ -35,7 +36,8 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/initiatives/` | High-level goals (YYYY-slug.md) |
 | `.factory/projects/` | Mid-level projects (YYYY-MM-slug.md) |
 | `.factory/tasks/` | Task queue (markdown files with YAML frontmatter) |
-| `.factory/state/` | Runtime state (pid, agent cli path, init timestamp) |
+| `.factory/config.json` | Bootstrap config (provider, default branch, worktrees path) |
+| `.factory/state/` | Runtime state (pid, init timestamp) |
 | `.factory/logs/` | Agent run logs |
 | `.factory/worktrees/` | Source repo worktrees for project tasks |
 
@@ -43,18 +45,18 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 
 `factory.sh` is structured as:
 
-1. **Bash preamble** — arg parsing, dev mode, dev reset
-2. **Factory setup** — `git init`, directory creation, resume logic
-3. **Embedded Python** (`cat > ... <<'PY'`) — the full `factory.py` runner:
-   - Task parsing (`parse_task`, `load_tasks`)
-   - Task metadata updates (`update_task_meta`)
-   - Completion checks (`check_one_condition`, `check_done`)
-   - Task scheduling (`next_task`)
-   - Claude headless runner (`run_claude`) — streams JSON, logs tool calls
-   - Main loop (`run`) — picks next task, runs agent, commits results
-4. **CLAUDE.md template** — written into `.factory/`
-5. **Bootstrap task** — the `define-purpose` task template
-6. **Post-setup** — gitignore, hook installation, launcher generation
+1. **Constants** — `ROOT`, `FACTORY_DIR`, `PROVIDER`, `DEFAULT_BRANCH`
+2. **Dependencies** — provider detection, `python3` check
+3. **Functions**:
+   - `teardown()` — remove `.factory/`, worktrees, `factory/*` branches
+   - `write_runner()` — embedded `factory.py` (~930 lines)
+   - `write_claude_md()` — agent operating instructions template
+   - `write_bootstrap_task()` — initial `define-purpose` task
+   - `write_launcher()` — `./factory` launcher script
+   - `write_hook()` — post-commit hook
+   - `ensure_excluded()` — add `.factory/` to `.git/info/exclude`
+   - `bootstrap()` — create dirs, write content, git init + commit, python init
+4. **Command dispatch** — `case` handles `reset`, `dev`, default (resume/bootstrap)
 
 ## Task system
 

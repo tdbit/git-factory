@@ -189,7 +189,7 @@ The agent works in the foreground, streaming tool calls and costs to the termina
 
 ```bash
 bash factory.sh dev          # tear down and re-bootstrap every time
-bash factory.sh dev reset    # tear down only, don't run
+bash factory.sh reset        # tear down only
 ```
 
 ### Destroy
