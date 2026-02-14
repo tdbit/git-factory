@@ -159,42 +159,6 @@ def load_agent(name):
         "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
     }
 
-def get_active_initiative():
-    """Find the highest priority active initiative."""
-    if not INITIATIVES_DIR.exists():
-        return None
-    initiatives = []
-    for f in INITIATIVES_DIR.glob("*.md"):
-        text = f.read_text()
-        if "status: active" in text: # simple check
-            priority = 0
-            if "priority: high" in text: priority = 3
-            elif "priority: medium" in text: priority = 2
-            elif "priority: low" in text: priority = 1
-            initiatives.append((priority, f))
-    if not initiatives:
-        return None
-    # sort by priority desc, then alphanumeric
-    initiatives.sort(key=lambda x: (-x[0], x[1].name))
-    return initiatives[0][1] # return path
-
-def get_active_project():
-    """Find the highest priority active project."""
-    if not PROJECTS_DIR.exists():
-        return None
-    projects = []
-    for f in PROJECTS_DIR.glob("*.md"):
-        text = f.read_text()
-        if "status: active" in text: # simple check
-            priority = 0
-            if "priority: high" in text: priority = 3
-            elif "priority: medium" in text: priority = 2
-            elif "priority: low" in text: priority = 1
-            projects.append((priority, f))
-    if not projects:
-        return None
-    projects.sort(key=lambda x: (-x[0], x[1].name))
-    return projects[0][1]
 
 # --- task parsing ---
 
@@ -245,9 +209,9 @@ def parse_task(path):
         "name": name,
         "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
         "agent": meta.get("agent", ""),
-        "project": meta.get("project", ""),
-        "done": done_lines,
         "parent": meta.get("parent", ""),
+        "previous": meta.get("previous", ""),
+        "done": done_lines,
         "prompt": "\n".join(prompt_lines).strip(),
         "sections": sections,
         "_path": path,
@@ -362,8 +326,8 @@ def next_task():
     for t in tasks:
         if done_map.get(t["_path"].name):
             continue
-        parent = t["parent"]
-        if parent and not done_map.get(parent, False):
+        prev = t.get("previous", "")
+        if prev and not done_map.get(prev, False):
             continue
         return t
     return None
@@ -664,81 +628,85 @@ def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
 # --- task planning ---
 
 PLAN_PROMPT = """\
-You are the factory's planning agent. Your job is to decide the next best step for this repository.
-You operate on four levels:
-1.  **Initiatives**: High-level projects (found in `initiatives/`).
-2.  **Projects**: Executable workstreams under initiatives (found in `projects/`).
-3.  **Agents**: Specialists to execute those projects (found in `agents/`).
-4.  **Tasks**: Atomic units of work (found in `tasks/`).
+You are the factory's planning agent.
 
-## Step 1: Analyze State
--   Read `CLAUDE.md` to understand the Purpose.
--   List files in `initiatives/`. Are there any active ones?
--   List files in `projects/`. Are there any active ones and are they tied to initiatives?
--   List files in `agents/`. Do we have the right specialists?
+Your job is to allocate focus and create exactly one next task.
 
-## Step 2: Prioritize "Meta-Work"
-Before doing work, ensure we have the *structure* to do it.
+You operate over three flat levels of structure (each is a folder of markdown files):
+- Initiatives (initiatives/)
+- Projects (projects/)
+- Tasks (tasks/)
 
-**Quality Gates by Abstraction Level (apply before creating any item):**
--   **Initiative = Existential**: Must define the real-world outcome. Why this matters to users or the domain. Long-horizon direction, not implementation detail.
--   **Project = Strategic**: Must compound over time. Clarify the leverage, sequencing, and capability being built across multiple tasks.
--   **Task = Tactical**: Must be concrete and executable in one session with explicit files/commands/behaviors.
+Relationships are defined by frontmatter fields.
 
-**Rules for Meta-Work:**
-1.  **Missing Initiatives**: If there are fewer than 3 active initiatives, create a Task to "Draft a new Initiative".
-    -   *Task Prompt*: "Read CLAUDE.md. Create a file `initiatives/YYYY-slug.md` for a high-impact project. Use frontmatter `status: active`, `priority: high`."
-2.  **Missing Projects**: If active initiatives do not have active projects, create a Task to "Draft a new Project".
-    -   *Task Prompt*: "Create a file `projects/YYYY-slug.md` linked to one active initiative. Use frontmatter `initiative: initiatives/name.md`, `status: active`, `priority: high`."
-3.  **Missing Agents**: If an active Project requires a specialist (e.g., "Migrate DB") but no suitable Agent exists in `agents/`, create a Task to "Create Agent".
-    -   *Task Prompt*: "Create a file `agents/db-migration-specialist.md`. Define a system prompt and tools for an agent that specializes in database migrations."
+# Invariants (Must Always Hold)
+- Exactly 1 active initiative
+- At most 2 active projects
+- At most 3 active tasks
+- At most 1 active unparented (factory) task
 
-## Step 3: Prioritize Execution
-If structure is good, move the work forward.
+If these constraints are violated, fix them before creating anything new.
 
-**Rules for Execution:**
-1.  Pick the highest priority Active Project (or create one first if missing).
-2.  Read it. What is the next step?
-3.  Validate abstraction fit before creating work:
-    -   Initiative checks: existential outcome clarity, user/domain impact, no implementation-detail wording.
-    -   Project checks: strategic leverage, clear linkage to one initiative, decomposable into multiple tactical tasks.
-    -   Task checks: tactical specificity, mechanically verifiable done conditions, can complete in one session.
-4.  Create a strict, atomic Task to do that step.
-    -   **Important**: Assign the Task to the right Agent by adding `agent: agents/name.md` to the frontmatter.
-    -   **Important**: Link the Task to its Project via `project: projects/name.md`.
-    -   *Task Prompt*: "Advance Project X by doing Y."
-5.  Apply these task-level quality gates before writing the task:
-    -   **Purpose alignment**: Does it directly advance an item in the Tactical Purpose? Does it move a needle described in Measures?
-    -   **Foundation first**: Prefer work that unblocks or compounds future work. Tests before features. Structure before polish. Contracts before implementations.
-    -   **Concreteness**: The task must name specific files, functions, or behaviors.
-    -   **Right-sized**: A single task should be completable in one agent session. If the improvement is large, find the smallest slice that delivers value on its own.
-    -   **No repetition**: Don't redo work that's already been completed. Don't create a task that duplicates or overlaps with existing tasks.
-    -   **Don't plan ahead**: Write exactly one task. Don't create a backlog.
+# Read-Set Rule
+When planning, only read items with status ∈ (active, backlog, suspended).
+Ignore completed and stopped items unless explicitly debugging regressions.
 
-## Step 4: Write the Task File
-Create a file in `tasks/` named `{today}-slug.md`.
+# Planning Order
+1. Ensure invariants hold.
+2. Prefer refinement over creation.
+3. Only create new structure if necessary.
+4. Write exactly one task.
+5. Never create multiple tasks in a single planning run.
 
-**Format:**
+# Selection Logic
+1. If there is a ready active task, do nothing.
+2. If no active initiative exists:
+   - Promote exactly one backlog initiative to active.
+   - If none exist, create up to 3 backlog initiatives and activate exactly one.
+3. If the active initiative has no active project:
+   - Promote one backlog project under it.
+   - If none exist, create exactly one backlog project under it and activate it.
+4. If the active project has no ready tasks:
+   - Create 1–3 backlog tasks under it.
+   - Activate exactly one.
+
+Unparented tasks are factory maintenance tasks. At most one may be active at any time.
+
+# Task Creation Rules
+When writing a task:
+- Atomic, completable in one session.
+- Names specific files/functions/behaviors.
+- Produces observable change.
+- Includes strict Done conditions.
+- Advances the active project (or is an unparented factory task).
+- Does not create parallel structure.
+
+Never create more than one task.
+
+# Output
+Create exactly one file in tasks/ named {today}-slug.md.
+
+Format:
 ```markdown
 ---
 tools: Read,Write,Edit,Bash
-project: projects/name.md    # Required for execution tasks; omitted only for pure meta-work
-agent: agents/specialist.md  # Optional: only if a specific agent should run this
+parent: projects/name.md   # omit if factory maintenance task
+previous: YYYY-MM-DD-other.md   # optional
 ---
 
-The prompt. Be specific.
+Concrete instruction.
 
 ## Done
 - `file_exists(...)`
 ...
 ```
 
-Write exactly one task. Commit it.
+Commit it.
 """
 
 def plan_next_task():
     today = time.strftime("%Y-%m-%d")
-    prompt = PLAN_PROMPT.replace("{today}", today)
+    prompt = PLAN_PROMPT.format(today=today)
     log("planning next task")
     ok, session_id = run_agent(prompt)
     if ok:
@@ -795,7 +763,7 @@ def run():
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
-            update_task_meta(task, status="failed")
+            update_task_meta(task, status="stopped", stop_reason="failed")
             commit_task(task, f"Failed Task: {name}")
             log(f"task failed: {name}")
             return
@@ -806,7 +774,7 @@ def run():
             commit_task(task, f"Complete Task: {name}")
             log(f"task done: {name}")
         else:
-            update_task_meta(task, status="incomplete")
+            update_task_meta(task, status="suspended")
             commit_task(task, f"Incomplete Task: {name}")
             log(f"task did not complete: {name}")
             if details:
@@ -825,7 +793,7 @@ PY
 chmod +x "$WORKTREE/$PY_NAME"
 
 # --- write CLAUDE.md (metadata only) ---
-cat > "$WORKTREE/CLAUDE.md" <<CLAUDE
+cat > "$WORKTREE/CLAUDE.md" <<'CLAUDE'
 # Factory
 
 Automated software factory for \`$REPO\`.
