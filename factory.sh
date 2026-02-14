@@ -1274,7 +1274,7 @@ TASK
 # --- writer: ./factory launcher ---
 write_launcher() {
 local LAUNCHER="$ROOT/factory"
-local SCRIPT_PATH="$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$0")"
+local SCRIPT_PATH="$(realpath "$0")"
 if [[ "$SCRIPT_PATH" == "$ROOT"* ]] && [[ "$SCRIPT_PATH" != "$LAUNCHER" ]]; then
   rm -f "$SCRIPT_PATH" || true
 fi
@@ -1370,12 +1370,10 @@ CONF
   write_claude_md
   write_bootstrap_task
   write_hook
-  printf "don't touch this\n" > "$FACTORY_DIR/FACTORY.md"
   cat > "$FACTORY_DIR/.gitignore" <<'GI'
 state/
 logs/
 worktrees/
-FACTORY.md
 GI
   cp "$0" "$FACTORY_DIR/factory.sh"
 
@@ -1387,9 +1385,10 @@ GI
   (
     cd "$FACTORY_DIR"
     git add -A
+    git reset tasks/ >/dev/null 2>&1 || true  # unstage the bootstrap task(s)
     git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
-    git add -f tasks/
-    git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
+    git add tasks/
+    git commit -m "Initial task: $TASK_NAME" >/dev/null 2>&1 || true
   )
 
 }
