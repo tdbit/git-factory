@@ -33,13 +33,22 @@ dev_reset() {
     exit 1
   fi
 
+  # remove project worktrees under .git-factory/worktrees/
+  if [[ -d "$FACTORY_DIR/worktrees" ]]; then
+    for wt in "$FACTORY_DIR/worktrees"/*/; do
+      [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    done
+  fi
+
   if [[ -d "$WORKTREE" ]]; then
     git worktree remove --force "$WORKTREE" 2>/dev/null || rm -rf "$WORKTREE"
   fi
   rm -rf "$FACTORY_DIR"
-  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-    git branch -D "$BRANCH" >/dev/null 2>&1 || true
-  fi
+
+  # delete factory branches: factory/<repo> + any project branches factory/*
+  git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
+    git branch -D "$b" >/dev/null 2>&1 || true
+  done
   rm -f "$ROOT/factory"
 }
 
@@ -83,8 +92,12 @@ if [[ -d "$WORKTREE" ]]; then
 fi
 git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
 
+# --- detect default branch ---
+DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")"
+
 # --- write python runner into worktree ---
 mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state" "$WORKTREE/agents" "$WORKTREE/initiatives" "$WORKTREE/projects"
+printf "%s\n" "$DEFAULT_BRANCH" > "$WORKTREE/state/default_branch.txt"
 cat > "$WORKTREE/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast
@@ -112,6 +125,97 @@ AGENTS_DIR = ROOT / "agents"
 INITIATIVES_DIR = ROOT / "initiatives"
 PROJECTS_DIR = ROOT / "projects"
 STATE_DIR = ROOT / "state"
+# parent repo git dir — ROOT is .git-factory/worktree, so parent is two levels up
+PARENT_REPO = ROOT.parent.parent
+
+def _get_default_branch():
+    p = STATE_DIR / "default_branch.txt"
+    if p.exists():
+        val = p.read_text().strip()
+        if val:
+            return val
+    return "main"
+
+def project_slug(project_path):
+    """Extract slug from projects/YYYY-MM-slug.md -> slug."""
+    name = Path(project_path).stem  # YYYY-MM-slug
+    return re.sub(r"^\d{4}-\d{2}-", "", name)
+
+def project_branch_name(project_path):
+    return f"factory/{project_slug(project_path)}"
+
+def project_worktree_dir(project_path):
+    return ROOT.parent / "worktrees" / project_slug(project_path)
+
+def ensure_project_worktree(project_path):
+    """Create project branch (off default branch) and worktree if needed."""
+    slug = project_slug(project_path)
+    branch = project_branch_name(project_path)
+    wt_dir = project_worktree_dir(project_path)
+    default_branch = _get_default_branch()
+
+    def _git(*args):
+        return subprocess.check_output(
+            ["git"] + list(args),
+            cwd=PARENT_REPO,
+            stderr=subprocess.STDOUT,
+        ).decode().strip()
+
+    # create branch if missing
+    try:
+        _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+    except subprocess.CalledProcessError:
+        _git("branch", branch, default_branch)
+        log(f"created branch {branch} off {default_branch}")
+
+    # create worktree if missing or stale
+    if wt_dir.exists():
+        # check if git considers it valid
+        try:
+            wt_list = _git("worktree", "list", "--porcelain")
+            if str(wt_dir.resolve()) not in wt_list:
+                _git("worktree", "remove", "--force", str(wt_dir))
+                wt_dir.mkdir(parents=True, exist_ok=True)
+                _git("worktree", "add", str(wt_dir), branch)
+                log(f"re-created stale worktree {slug}")
+        except subprocess.CalledProcessError:
+            pass
+    else:
+        wt_dir.parent.mkdir(parents=True, exist_ok=True)
+        _git("worktree", "add", str(wt_dir), branch)
+        log(f"created worktree {slug} at {wt_dir}")
+
+    return wt_dir
+
+def build_epilogue(task, project_dir):
+    """Build epilogue instruction appended to project task prompts."""
+    task_path = task["_path"]
+    return f"""
+
+---
+
+## Epilogue (runner instructions — follow these exactly)
+
+You are working in a project worktree at `{project_dir}`.
+Your code changes go here. The factory orchestration lives in a separate worktree.
+
+When you are done:
+1. Stage and commit your code changes in this worktree (the current directory).
+   Use a short, descriptive commit message.
+2. Get the final commit hash: `git rev-parse HEAD`
+3. Update the task file at `{task_path}` — add `project_commit: <hash>` to the
+   frontmatter (after the last existing field, before the closing `---`).
+   Use: `python3 -c "
+p = __import__('pathlib').Path('{task_path}')
+t = p.read_text()
+_, fm, body = t.split('---', 2)
+fm = fm.rstrip() + '\\nproject_commit: <HASH>\\n'
+p.write_text('---' + fm + '---' + body)
+"` (replace <HASH> with the actual hash)
+4. Commit that metadata change in the factory worktree:
+   `git -C {ROOT} add {task_path.relative_to(ROOT)} && git -C {ROOT} commit -m "Record project commit for {task['name']}"`
+5. Stop.
+"""
 
 def log(msg):
     print(f"\033[33mfactory:\033[0m {msg}", flush=True)
@@ -147,7 +251,7 @@ def get_agent_cli():
         if path:
             _cli_cache = (cmd, path)
             return _cli_cache
-    log("no supported agent CLI found on PATH (tried: claude, claude-code, codex)")
+    log("no supported agent CLI found on PATH (tried: codex, claude, claude-code)")
     return None
 
 def init():
@@ -281,7 +385,8 @@ def update_task_meta(task, **kwargs):
 
 # --- completion checks ---
 
-def check_one_condition(cond):
+def check_one_condition(cond, target_dir=None):
+    base = target_dir or ROOT
     if not cond:
         return False
     if cond == "always":
@@ -292,17 +397,15 @@ def check_one_condition(cond):
         return False
     func, raw_args = m.group(1), m.group(2)
     try:
-        # treat raw_args as a tuple of strings, e.g. "param1", "param2"
-        # wrap in parens to ensure it parses as a tuple even if single arg
         if not raw_args.strip():
             args = []
         else:
-            # parsing "foo", "bar" by wrapping in parens -> ("foo", "bar")
             parsed = ast.literal_eval(f"({raw_args})")
             args = [parsed] if isinstance(parsed, str) else list(parsed)
     except (ValueError, SyntaxError):
         log(f"check parse error: {cond}")
         return False
+    # section_exists/no_section always check the factory CLAUDE.md
     if func == "section_exists":
         text = (ROOT / "CLAUDE.md").read_text() if (ROOT / "CLAUDE.md").exists() else ""
         return args[0] in text
@@ -314,44 +417,44 @@ def check_one_condition(cond):
         glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
         has_wild = any(ch in glob_pat for ch in "*?[]")
         if has_wild or "YYYY" in pat:
-            return any(ROOT.glob(glob_pat))
-        return (ROOT / pat).exists()
+            return any(base.glob(glob_pat))
+        return (base / pat).exists()
     elif func == "file_absent":
         pat = args[0]
         glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
         has_wild = any(ch in glob_pat for ch in "*?[]")
         if has_wild or "YYYY" in pat:
-            return not any(ROOT.glob(glob_pat))
-        return not (ROOT / pat).exists()
+            return not any(base.glob(glob_pat))
+        return not (base / pat).exists()
     elif func == "file_contains":
-        p = ROOT / args[0]
+        p = base / args[0]
         return p.exists() and args[1] in p.read_text()
     elif func == "file_missing_text":
-        p = ROOT / args[0]
+        p = base / args[0]
         return not p.exists() or args[1] not in p.read_text()
     elif func == "command":
         try:
-            subprocess.run(args[0], shell=True, cwd=ROOT, check=True, capture_output=True)
+            subprocess.run(args[0], shell=True, cwd=base, check=True, capture_output=True)
             return True
         except subprocess.CalledProcessError:
             return False
     log(f"unknown check: {func}")
     return False
 
-def check_done(done):
+def check_done(done, target_dir=None):
     """Check a list of done conditions. All must pass."""
     if not done:
         return False
-    return all(check_one_condition(c) for c in done)
+    return all(check_one_condition(c, target_dir) for c in done)
 
-def check_done_details(done):
+def check_done_details(done, target_dir=None):
     """Return (all_passed, [(cond, passed), ...])."""
     results = []
     if not done:
         return False, results
     all_passed = True
     for cond in done:
-        ok = check_one_condition(cond)
+        ok = check_one_condition(cond, target_dir)
         results.append((cond, ok))
         if not ok:
             all_passed = False
@@ -394,12 +497,13 @@ def _build_prompt(prompt, allowed_tools, agent):
             tools = agent["tools"]
     return full_prompt, tools
 
-def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None):
+def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cwd=None):
     import threading, json as _json
     cli_path = cli_path or shutil.which("codex")
     if not cli_path:
         log("codex CLI not found on PATH")
         return False, None
+    work_dir = cwd or ROOT
 
     full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
 
@@ -427,7 +531,7 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
-            cwd=ROOT,
+            cwd=work_dir,
         )
         start = time.monotonic()
         last_output = [start]
@@ -557,12 +661,13 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
     return False, None
 
 
-def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cli_name=None):
+def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cli_name=None, cwd=None):
     import json as _json, threading
     cli_path = cli_path or shutil.which(cli_name or "claude")
     if not cli_path:
         log("claude CLI not found on PATH")
         return False, None
+    work_dir = cwd or ROOT
 
     full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
 
@@ -582,7 +687,7 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
         stderr=subprocess.PIPE, # Capture stderr
         stdin=subprocess.DEVNULL,
         start_new_session=True,
-        cwd=ROOT,
+        cwd=work_dir,
     )
     session_id = None
     stderr_output = []
@@ -676,14 +781,14 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
         return False, session_id
 
 
-def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None):
+def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cwd=None):
     cli = get_agent_cli()
     if not cli:
         return False, None
     cli_name, cli_path = cli
     if cli_name == "codex":
-        return run_codex(prompt, allowed_tools, agent, cli_path)
-    return run_claude(prompt, allowed_tools, agent, cli_path, cli_name)
+        return run_codex(prompt, allowed_tools, agent, cli_path, cwd=cwd)
+    return run_claude(prompt, allowed_tools, agent, cli_path, cli_name, cwd=cwd)
 
 # --- task planning ---
 
@@ -796,19 +901,25 @@ def run():
             pass  # stale pid file, safe to overwrite
     pid_file.write_text(str(os.getpid()) + "\n")
 
-    def commit_task(task, message, scoop=False, reset=False):
-        """Commit task metadata.
+    def commit_task(task, message, scoop=False, reset=False, work_dir=None):
+        """Commit task metadata on the factory branch.
 
         scoop=True:  best-effort stage any uncommitted agent work.
         reset=True:  discard uncommitted changes (for crashed agents).
+        work_dir:    project worktree (if set, scoop/reset target the project
+                     worktree instead of factory; only the task file is committed
+                     on the factory branch).
         """
+        is_project = work_dir is not None and work_dir != ROOT
         if reset:
+            target = work_dir or ROOT
             try:
-                sh("git", "checkout", "--", ".")
-                sh("git", "clean", "-fd")
+                subprocess.check_output(["git", "checkout", "--", "."], cwd=target, stderr=subprocess.STDOUT)
+                subprocess.check_output(["git", "clean", "-fd"], cwd=target, stderr=subprocess.STDOUT)
             except Exception:
                 pass
-        elif scoop:
+        elif scoop and not is_project:
+            # only scoop in factory worktree for non-project tasks
             try:
                 status = sh("git", "status", "--porcelain")
                 if status:
@@ -828,6 +939,15 @@ def run():
             continue
         name = task["name"]
         log(f"task: {name}")
+
+        # determine work directory: project worktree or factory worktree
+        is_project_task = task["parent"].startswith("projects/")
+        if is_project_task:
+            work_dir = ensure_project_worktree(task["parent"])
+            log(f"project worktree: {work_dir}")
+        else:
+            work_dir = ROOT
+
         branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
         update_task_meta(task, status="active", pid=str(os.getpid()), branch=branch)
         commit_task(task, f"Start Task: {name}")
@@ -837,33 +957,42 @@ def run():
             if section in task["sections"]:
                 prompt_parts.append(f"## {section.title()}\n\n{task['sections'][section]}")
         prompt = "\n\n".join(prompt_parts)
-        
+
+        # append epilogue for project tasks
+        if is_project_task:
+            prompt += build_epilogue(task, work_dir)
+
         # Load agent if specified
         agent_def = None
         if task.get("agent"):
-            # strip "agents/" prefix if present to get name
             agent_name = task["agent"].replace("agents/", "").replace(".md", "")
             agent_def = load_agent(agent_name)
             if agent_def:
                 log(f"using agent: {agent_name}")
 
-        ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def)
+        ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir)
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
             update_task_meta(task, status="stopped", stop_reason="failed")
-            commit_task(task, f"Failed Task: {name}", reset=True)
+            commit_task(task, f"Failed Task: {name}", reset=True, work_dir=work_dir if is_project_task else None)
             log(f"task failed: {name}")
             return
-        passed, details = check_done_details(task["done"])
+        passed, details = check_done_details(task["done"], target_dir=work_dir)
         if passed:
-            commit = sh("git", "rev-parse", "HEAD")
+            if is_project_task:
+                # capture commit from project worktree
+                commit = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=work_dir, stderr=subprocess.STDOUT
+                ).decode().strip()
+            else:
+                commit = sh("git", "rev-parse", "HEAD")
             update_task_meta(task, status="completed", commit=commit)
-            commit_task(task, f"Complete Task: {name}", scoop=True)
+            commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=work_dir if is_project_task else None)
             log(f"task done: {name}")
         else:
             update_task_meta(task, status="suspended")
-            commit_task(task, f"Incomplete Task: {name}", scoop=True)
+            commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=work_dir if is_project_task else None)
             log(f"task did not complete: {name}")
             if details:
                 log("done conditions:")
@@ -1272,18 +1401,25 @@ if [[ "${1:-}" == "destroy" ]]; then
     echo -e "\033[33mfactory:\033[0m restored factory.sh"
   fi
 
-  # remove worktree then .git-factory dir
+  # remove project worktrees under .git-factory/worktrees/
+  if [[ -d "$FACTORY_DIR/worktrees" ]]; then
+    for wt in "$FACTORY_DIR/worktrees"/*/; do
+      [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    done
+  fi
+
+  # remove factory worktree then .git-factory dir
   if [[ -d "$WORKTREE" ]]; then
     git worktree remove --force "$WORKTREE" 2>/dev/null || rm -rf "$WORKTREE"
   fi
   rm -rf "$FACTORY_DIR"
   echo -e "\033[33mfactory:\033[0m removed .git-factory/"
 
-  # delete factory branches
-  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-    git branch -D "$BRANCH" >/dev/null 2>&1 || true
-    echo -e "\033[33mfactory:\033[0m deleted '$BRANCH' branch"
-  fi
+  # delete all factory branches (factory/<repo> + project branches)
+  git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
+    git branch -D "$b" >/dev/null 2>&1 || true
+    echo -e "\033[33mfactory:\033[0m deleted '$b' branch"
+  done
 
   # remove this launcher
   rm -f "$ROOT/factory"
