@@ -63,45 +63,8 @@ teardown() {
   rm -f "$ROOT/factory"
 }
 
-# --- handle commands ---
-DEV_MODE=false
-case "${1:-}" in
-  reset)
-    teardown
-    echo -e "\033[33mfactory:\033[0m reset"
-    exit 0
-    ;;
-  dev)
-    DEV_MODE=true
-    [[ -d "$FACTORY_DIR" ]] && teardown
-    ;;
-esac
-
-# --- ensure .factory/ is locally ignored ---
-mkdir -p "$(dirname "$EXCLUDE_FILE")"
-if ! grep -qxF "/.factory/" "$EXCLUDE_FILE" 2>/dev/null; then
-  printf "\n/.factory/\n" >> "$EXCLUDE_FILE"
-fi
-
-# --- resume existing factory or create fresh ---
-if [[ "$DEV_MODE" == false ]] && [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
-  echo -e "\033[33mfactory:\033[0m resuming"
-  cd "$FACTORY_DIR"
-  exec python3 "$PY_NAME"
-fi
-
-# --- fresh setup: create standalone factory repo ---
-mkdir -p "$FACTORY_DIR"
-git init "$FACTORY_DIR" >/dev/null 2>&1
-
-# --- write python runner into factory dir ---
-for d in tasks hooks state agents initiatives projects logs; do
-  mkdir -p "$FACTORY_DIR/$d"
-done
-mkdir -p "$PROJECT_WORKTREES"
-cat > "$FACTORY_DIR/config.json" <<CONF
-{"default_branch": "$DEFAULT_BRANCH", "project_worktrees": "$PROJECT_WORKTREES", "provider": "$PROVIDER"}
-CONF
+# --- writer: python runner ---
+write_runner() {
 cat > "$FACTORY_DIR/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast, json, atexit
@@ -1036,9 +999,11 @@ if __name__ == "__main__":
     run()
 PY
 chmod +x "$FACTORY_DIR/$PY_NAME"
+}
 
-# --- write CLAUDE.md (metadata only) ---
-REPO="$(basename "$ROOT")"
+# --- writer: CLAUDE.md ---
+write_claude_md() {
+local REPO="$(basename "$ROOT")"
 cat > "$FACTORY_DIR/CLAUDE.md" <<CLAUDE
 # Factory
 
@@ -1218,11 +1183,10 @@ If your task creates follow-up tasks, set the \`parent\` field in the new
 task's frontmatter to the filename of the current task so the runner
 knows the dependency order.
 CLAUDE
+}
 
-# --- write factory marker ---
-printf "don't touch this\n" > "$FACTORY_DIR/FACTORY.md"
-
-# --- write bootstrap task ---
+# --- writer: bootstrap task ---
+write_bootstrap_task() {
 cat > "$FACTORY_DIR/tasks/$(date +%Y-%m-%d)-define-purpose.md" <<'TASK'
 ---
 tools: Read,Write,Edit,Bash
@@ -1354,50 +1318,12 @@ agent has no way to evaluate whether a change is worthwhile.
 - Read the sections back and check they are grounded in the actual repo, not
   generic platitudes.
 TASK
+}
 
-# --- write factory .gitignore ---
-cat > "$FACTORY_DIR/.gitignore" <<'GI'
-state/
-logs/
-worktrees/
-FACTORY.md
-GI
-
-# --- install post-commit hook ---
-cat > "$FACTORY_DIR/hooks/post-commit" <<'HOOK'
-#!/usr/bin/env bash
-echo -e "\033[33mfactory:\033[0m NEW COMMIT"
-HOOK
-chmod +x "$FACTORY_DIR/hooks/post-commit"
-git -C "$FACTORY_DIR" config core.hooksPath hooks
-
-# --- copy original installer and commit ---
-cp "$0" "$FACTORY_DIR/factory.sh"
-TASK_FILE="$(ls "$FACTORY_DIR/tasks/"*.md 2>/dev/null | head -1)"
-TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
-(
-  cd "$FACTORY_DIR"
-  git add -f .gitignore CLAUDE.md FACTORY.md "$PY_NAME" factory.sh hooks/
-  git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
-  git add -f tasks/
-  git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
-)
-
-# --- init ---
-(
-  cd "$FACTORY_DIR"
-  python3 "$PY_NAME" init
-) || { echo -e "\033[33mfactory:\033[0m init failed — aborting"; rm -rf "$FACTORY_DIR"; exit 1; }
-
-# --- replace this installer with a launcher script (skip in dev mode) ---
-if [[ "$DEV_MODE" == true ]]; then
-  echo -e "\033[33mfactory:\033[0m dev mode — factory at .factory/"
-  cd "$FACTORY_DIR"
-  exec python3 "$PY_NAME"
-fi
-
-SCRIPT_PATH="$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$0")"
-LAUNCHER="$ROOT/factory"
+# --- writer: ./factory launcher ---
+write_launcher() {
+local LAUNCHER="$ROOT/factory"
+local SCRIPT_PATH="$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$0")"
 if [[ "$SCRIPT_PATH" == "$ROOT"* ]] && [[ "$SCRIPT_PATH" != "$LAUNCHER" ]]; then
   rm -f "$SCRIPT_PATH" || true
 fi
@@ -1454,15 +1380,102 @@ cd "$FACTORY_DIR"
 exec python3 "$PY_NAME"
 LAUNCH
 chmod +x "$LAUNCHER"
-
-# --- ignore the launcher via .git/info/exclude ---
-if ! grep -qxF "/factory" "$EXCLUDE_FILE"; then
+if ! grep -qxF "/factory" "$EXCLUDE_FILE" 2>/dev/null; then
   printf "\n/factory\n" >> "$EXCLUDE_FILE"
 fi
+}
 
-echo -e "\033[33mfactory:\033[0m factory at .factory/"
-echo -e "\033[33mfactory:\033[0m run ./factory to start"
+# --- bootstrap: set up .factory/ and run ---
+bootstrap() {
+  # ensure .factory/ is locally ignored
+  mkdir -p "$(dirname "$EXCLUDE_FILE")"
+  if ! grep -qxF "/.factory/" "$EXCLUDE_FILE" 2>/dev/null; then
+    printf "\n/.factory/\n" >> "$EXCLUDE_FILE"
+  fi
 
-# --- run in foreground so user sees output ---
-cd "$FACTORY_DIR"
-exec python3 "$PY_NAME"
+  # resume if already bootstrapped
+  if [[ "$DEV_MODE" == false ]] && [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
+    echo -e "\033[33mfactory:\033[0m resuming"
+    cd "$FACTORY_DIR"
+    exec python3 "$PY_NAME"
+  fi
+
+  # fresh setup
+  mkdir -p "$FACTORY_DIR"
+  git init "$FACTORY_DIR" >/dev/null 2>&1
+
+  for d in tasks hooks state agents initiatives projects logs; do
+    mkdir -p "$FACTORY_DIR/$d"
+  done
+  mkdir -p "$PROJECT_WORKTREES"
+  cat > "$FACTORY_DIR/config.json" <<CONF
+{"default_branch": "$DEFAULT_BRANCH", "project_worktrees": "$PROJECT_WORKTREES", "provider": "$PROVIDER"}
+CONF
+
+  write_runner
+  write_claude_md
+  write_bootstrap_task
+
+  printf "don't touch this\n" > "$FACTORY_DIR/FACTORY.md"
+  cat > "$FACTORY_DIR/.gitignore" <<'GI'
+state/
+logs/
+worktrees/
+FACTORY.md
+GI
+  cat > "$FACTORY_DIR/hooks/post-commit" <<'HOOK'
+#!/usr/bin/env bash
+echo -e "\033[33mfactory:\033[0m NEW COMMIT"
+HOOK
+  chmod +x "$FACTORY_DIR/hooks/post-commit"
+  git -C "$FACTORY_DIR" config core.hooksPath hooks
+
+  # commit and init
+  cp "$0" "$FACTORY_DIR/factory.sh"
+  local TASK_FILE="$(ls "$FACTORY_DIR/tasks/"*.md 2>/dev/null | head -1)"
+  local TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
+  (
+    cd "$FACTORY_DIR"
+    git add -f .gitignore CLAUDE.md FACTORY.md "$PY_NAME" factory.sh hooks/
+    git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
+    git add -f tasks/
+    git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
+  )
+
+  (
+    cd "$FACTORY_DIR"
+    python3 "$PY_NAME" init
+  ) || { echo -e "\033[33mfactory:\033[0m init failed — aborting"; rm -rf "$FACTORY_DIR"; exit 1; }
+
+  # dev mode: skip launcher, run immediately
+  if [[ "$DEV_MODE" == true ]]; then
+    echo -e "\033[33mfactory:\033[0m dev mode — factory at .factory/"
+    cd "$FACTORY_DIR"
+    exec python3 "$PY_NAME"
+  fi
+
+  write_launcher
+
+  echo -e "\033[33mfactory:\033[0m factory at .factory/"
+  echo -e "\033[33mfactory:\033[0m run ./factory to start"
+
+  cd "$FACTORY_DIR"
+  exec python3 "$PY_NAME"
+}
+
+# --- handle commands ---
+DEV_MODE=false
+case "${1:-}" in
+  reset)
+    teardown
+    echo -e "\033[33mfactory:\033[0m reset"
+    exit 0
+    ;;
+  dev)
+    DEV_MODE=true
+    [[ -d "$FACTORY_DIR" ]] && teardown
+    ;;
+esac
+
+bootstrap
+
