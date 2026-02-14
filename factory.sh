@@ -108,14 +108,13 @@ for d in tasks hooks state agents initiatives projects logs; do
   mkdir -p "$FACTORY_DIR/$d"
 done
 mkdir -p "$PROJECT_WORKTREES"
-printf "%s\n" "$DEFAULT_BRANCH" > "$FACTORY_DIR/state/default_branch.txt"
-printf "%s\n" "$PROJECT_WORKTREES" > "$FACTORY_DIR/state/project_worktrees.txt"
+cat > "$FACTORY_DIR/config.json" <<CONF
+{"default_branch": "$DEFAULT_BRANCH", "project_worktrees": "$PROJECT_WORKTREES", "provider": "$PROVIDER"}
+CONF
 cat > "$FACTORY_DIR/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
-import os, sys, re, signal, time, shutil, subprocess, ast
+import os, sys, re, signal, time, shutil, subprocess, ast, json, atexit
 from pathlib import Path
-
-import atexit
 
 ROOT = Path(__file__).resolve().parent
 TASKS_DIR = ROOT / "tasks"
@@ -126,13 +125,18 @@ STATE_DIR = ROOT / "state"
 # parent repo — ROOT is .factory/, so parent is one level up
 PARENT_REPO = ROOT.parent
 
+# --- config (written once at bootstrap) ---
+_config = None
+
+def _load_config():
+    global _config
+    if _config is None:
+        p = ROOT / "config.json"
+        _config = json.loads(p.read_text()) if p.exists() else {}
+    return _config
+
 def _get_default_branch():
-    p = STATE_DIR / "default_branch.txt"
-    if p.exists():
-        val = p.read_text().strip()
-        if val:
-            return val
-    return "main"
+    return _load_config().get("default_branch", "main")
 
 def project_slug(project_path):
     """Extract slug from projects/YYYY-MM-slug.md -> slug."""
@@ -143,12 +147,8 @@ def project_branch_name(project_path):
     return f"factory/{project_slug(project_path)}"
 
 def _get_project_worktrees_dir():
-    p = STATE_DIR / "project_worktrees.txt"
-    if p.exists():
-        val = p.read_text().strip()
-        if val:
-            return Path(val)
-    return ROOT / "worktrees"
+    val = _load_config().get("project_worktrees")
+    return Path(val) if val else ROOT / "worktrees"
 
 def project_worktree_dir(project_path):
     return _get_project_worktrees_dir() / project_slug(project_path)
@@ -239,28 +239,24 @@ def get_agent_cli():
     global _cli_cache
     if _cli_cache is not None:
         return _cli_cache
-    for cmd in ("codex", "claude", "claude-code"):
-        path = shutil.which(cmd)
+    name = _load_config().get("provider")
+    if name:
+        path = shutil.which(name)
         if path:
-            _cli_cache = (cmd, path)
+            _cli_cache = (name, path)
             return _cli_cache
-    log("no supported agent CLI found on PATH (tried: codex, claude, claude-code)")
+    log("no agent CLI found (check config.json)")
     return None
 
 def init():
     cli = get_agent_cli()
     if not cli:
         return 1
-    cli_name, cli_path = cli
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     AGENTS_DIR.mkdir(exist_ok=True)
     INITIATIVES_DIR.mkdir(exist_ok=True)
     PROJECTS_DIR.mkdir(exist_ok=True)
     (STATE_DIR / "initialized.txt").write_text(time.ctime() + "\n")
-    (STATE_DIR / "agent_cli_name.txt").write_text(cli_name + "\n")
-    (STATE_DIR / "agent_cli_path.txt").write_text(cli_path + "\n")
-    # back-compat for older tooling that reads this file name
-    (STATE_DIR / "claude_path.txt").write_text(cli_path + "\n")
     return 0
 
 # --- helpers ---
