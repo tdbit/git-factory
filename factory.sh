@@ -349,13 +349,25 @@ def next_task():
     for t in tasks:
         if done_map.get(t["_path"].name):
             continue
-        prev = t.get("previous", "")
+        prev = t.get("previous", "").removeprefix("tasks/")
         if prev and not done_map.get(prev, False):
             continue
         return t
     return None
 
 # --- agent runner ---
+
+AGENT_TIMEOUT = float(os.environ.get("FACTORY_TIMEOUT_SEC", "0")) or None
+
+def _kill_proc(proc, reason="timeout"):
+    """Terminate a subprocess gracefully, then force-kill after 5s."""
+    log(f"killing agent ({reason})")
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 def _build_prompt(prompt, allowed_tools, agent):
     full_prompt = prompt
@@ -477,11 +489,15 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
 
         last_seen = last_output[0]
         next_heartbeat = last_seen + heartbeat_sec
+        deadline = start + AGENT_TIMEOUT if AGENT_TIMEOUT else None
         while proc.poll() is None:
             if last_output[0] != last_seen:
                 last_seen = last_output[0]
                 next_heartbeat = last_seen + heartbeat_sec
             now = time.monotonic()
+            if deadline and now >= deadline:
+                _kill_proc(proc, f"exceeded {AGENT_TIMEOUT:.0f}s timeout")
+                return False, None
             if now >= next_heartbeat:
                 elapsed = int(now - start)
                 log(f"still working… {elapsed}s")
@@ -612,11 +628,16 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
                     log("\033[2m" + ", ".join(parts) + "\033[0m")
     reader = threading.Thread(target=read_stream, daemon=True)
     reader.start()
+    start = time.monotonic()
+    deadline = start + AGENT_TIMEOUT if AGENT_TIMEOUT else None
     try:
         while reader.is_alive() or stderr_reader.is_alive():
-             reader.join(timeout=0.1)
-             stderr_reader.join(timeout=0.1)
-        
+             if deadline and time.monotonic() >= deadline:
+                 _kill_proc(proc, f"exceeded {AGENT_TIMEOUT:.0f}s timeout")
+                 return False, session_id
+             reader.join(timeout=0.5)
+             stderr_reader.join(timeout=0.5)
+
         exit_code = proc.wait()
         if exit_code != 0:
             log(f"claude failed with exit code {exit_code}")
