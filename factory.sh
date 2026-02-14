@@ -306,12 +306,12 @@ def run():
         log(f"task: {name}")
         branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
         update_task_meta(task, pid=str(os.getpid()), branch=branch)
-        commit_task(task, f"factory: start task — {name}")
+        commit_task(task, f"Start Task: {name}")
         ok, session_id = run_claude(task["prompt"], allowed_tools=task["tools"])
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
-            commit_task(task, f"factory: task failed — {name}")
+            commit_task(task, f"Failed Task: {name}")
             log(f"task failed: {name}")
             return
         if check_done(task["done"]):
@@ -320,10 +320,10 @@ def run():
                 update_task_meta(task, commit=commit)
             except Exception:
                 pass
-            commit_task(task, f"factory: task done — {name}")
+            commit_task(task, f"Complete Task: {name}")
             log(f"task done: {name}")
         else:
-            commit_task(task, f"factory: task incomplete — {name}")
+            commit_task(task, f"Incomplete Task: {name}")
             log(f"task did not complete: {name}")
             return
 
@@ -352,6 +352,24 @@ All your work happens here in the worktree.
 
 **Important**: Never read or traverse into the \`.git-factory/\` directory in the source repo.
 It contains the factory runtime and is not part of the codebase.
+
+## How tasks work
+
+You are given one task at a time by the runner (\`factory.py\`). The task prompt
+is your entire instruction for that run. You MUST follow these rules:
+
+1. **Do the task.** Complete what the task prompt asks.
+2. **Commit your work.** When you are done, \`git add\` and \`git commit\` the
+   files you changed. Use a short, descriptive commit message that summarizes
+   what you did — not the task name, not a prefix, just what changed.
+3. **Creating tasks.** Tasks are markdown files in \`tasks/\` with YAML
+   frontmatter. If your task creates follow-up tasks, you MUST set the
+   \`parent\` field to the filename of the current task so the runner knows
+   the dependency order. Use the naming convention \`YYYY-MM-DD-slug.md\`.
+4. **Do not modify this file beyond what a task asks.** If a task tells you to
+   add sections to \`CLAUDE.md\`, do that. Otherwise leave it alone.
+5. **Stop when done.** Do not loop, do not start the next task, do not look
+   for more work. Complete your task, commit, and stop.
 CLAUDE
 
 # --- write bootstrap task ---
@@ -467,8 +485,11 @@ the operational purpose and measures directly. Examples:
 - Can a new contributor understand this change without extra context?
 - Does the error output tell the user what went wrong and what to do?
 
-After writing these sections, commit CLAUDE.md with the message
-`factory: describe source repo purpose and goals`.
+After writing these sections, add them to this worktree's CLAUDE.md.
+
+Once that's done you should have a clear understanding of the repo's purpose and
+must now write the best next task for improving the repo based on that purpose.
+
 TASK
 
 # --- copy .gitignore from source repo ---
@@ -492,10 +513,14 @@ git -C "$WORKTREE" config core.hooksPath hooks
 
 # --- copy original installer into worktree and commit ---
 cp "$0" "$WORKTREE/factory.sh"
+TASK_FILE="$(ls "$WORKTREE/tasks/"*.md 2>/dev/null | head -1)"
+TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
 (
   cd "$WORKTREE"
-  git add -f .gitignore CLAUDE.md "$PY_NAME" factory.sh tasks/ hooks/
-  git commit -m "factory: bootstrap" >/dev/null 2>&1 || true
+  git add -f .gitignore CLAUDE.md "$PY_NAME" factory.sh hooks/
+  git commit -m "Bootstrap" >/dev/null 2>&1 || true
+  git add -f tasks/
+  git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
 )
 
 # --- init ---
