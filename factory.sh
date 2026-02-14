@@ -13,7 +13,8 @@ for cmd in git python3; do
 done
 
 REPO="$(basename "$ROOT")"
-BRANCH="factory"
+REPO_SLUG="$(printf '%s' "$REPO" | tr -c '[:alnum:]._-/' '-' | sed 's/^-*//; s/-*$//')"
+BRANCH="factory/${REPO_SLUG:-repo}"
 FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
 PY_NAME="factory.py"
@@ -84,7 +85,7 @@ fi
 git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
 
 # --- write python runner into worktree ---
-mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state"
+mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state" "$WORKTREE/agents" "$WORKTREE/initiatives"
 cat > "$WORKTREE/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast
@@ -93,7 +94,10 @@ from pathlib import Path
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 ROOT = Path(__file__).resolve().parent
+BRANCH = os.environ.get("FACTORY_BRANCH", "factory/repo")
 TASKS_DIR = ROOT / "tasks"
+AGENTS_DIR = ROOT / "agents"
+INITIATIVES_DIR = ROOT / "initiatives"
 STATE_DIR = ROOT / "state"
 
 def log(msg):
@@ -115,13 +119,59 @@ def init():
     if not claude:
         return 1
     branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
-    if branch != "factory":
-        log(f"not on factory branch: {branch}")
+    if branch != BRANCH:
+        log(f"not on factory branch ({BRANCH}): {branch}")
         return 2
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    AGENTS_DIR.mkdir(exist_ok=True)
+    INITIATIVES_DIR.mkdir(exist_ok=True)
     (STATE_DIR / "initialized.txt").write_text(time.ctime() + "\n")
     (STATE_DIR / "claude_path.txt").write_text(claude + "\n")
     return 0
+
+# --- helpers ---
+
+def load_agent(name):
+    """Load an agent definition from agents/{name}.md."""
+    path = AGENTS_DIR / f"{name}.md"
+    if not path.exists():
+        return None
+    text = path.read_text()
+    if not text.startswith("---"):
+        return {"name": name, "prompt": text, "tools": "Read,Write,Edit,Bash,Glob,Grep"}
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {"name": name, "prompt": text, "tools": "Read,Write,Edit,Bash,Glob,Grep"}
+    _, fm, body = parts
+    meta = {}
+    for line in fm.strip().splitlines():
+        key, _, val = line.partition(":")
+        if key.strip():
+            meta[key.strip()] = val.strip()
+    return {
+        "name": name,
+        "prompt": body.strip(),
+        "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
+    }
+
+def get_active_initiative():
+    """Find the highest priority active initiative."""
+    if not INITIATIVES_DIR.exists():
+        return None
+    initiatives = []
+    for f in INITIATIVES_DIR.glob("*.md"):
+        text = f.read_text()
+        if "status: active" in text: # simple check
+            priority = 0
+            if "priority: high" in text: priority = 3
+            elif "priority: medium" in text: priority = 2
+            elif "priority: low" in text: priority = 1
+            initiatives.append((priority, f))
+    if not initiatives:
+        return None
+    # sort by priority desc, then alphanumeric
+    initiatives.sort(key=lambda x: (-x[0], x[1].name))
+    return initiatives[0][1] # return path
 
 # --- task parsing ---
 
@@ -171,6 +221,7 @@ def parse_task(path):
     return {
         "name": name,
         "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
+        "agent": meta.get("agent", ""),
         "done": done_lines,
         "parent": meta.get("parent", ""),
         "prompt": "\n".join(prompt_lines).strip(),
@@ -272,21 +323,43 @@ def next_task():
 
 # --- claude runner ---
 
-def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
+
+def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None):
     import json as _json, threading
     claude = require_claude()
     if not claude:
         return False, None
+    
+    # If agent is provided, inject its prompt
+    full_prompt = prompt
+    if agent and agent.get("prompt"):
+        full_prompt = f"{agent['prompt']}\n\n---\n\n{prompt}"
+        if agent.get("tools"):
+             allowed_tools = agent["tools"]
+
     proc = subprocess.Popen(
         [claude, "--dangerously-skip-permissions", "-p", "--verbose",
          "--output-format", "stream-json",
-         prompt, "--allowedTools", allowed_tools],
+         full_prompt, "--allowedTools", allowed_tools],
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, # Capture stderr
         stdin=subprocess.DEVNULL,
         start_new_session=True,
         cwd=ROOT,
     )
     session_id = None
+    stderr_output = []
+    
+    def read_stderr():
+        for line in iter(proc.stderr.readline, b""):
+            line = line.decode().strip()
+            if line:
+               stderr_output.append(line)
+               # log(f"STDERR: {line}") # optional: log all stderr
+
+    stderr_reader = threading.Thread(target=read_stderr, daemon=True)
+    stderr_reader.start()
+    stdout_garbage = []
     def read_stream():
         nonlocal session_id
         for raw in iter(proc.stdout.readline, b""):
@@ -296,6 +369,7 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
             try:
                 ev = _json.loads(raw)
             except ValueError:
+                stdout_garbage.append(raw.decode(errors='replace'))
                 continue
             t = ev.get("type", "")
             if t == "assistant":
@@ -335,9 +409,24 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
     reader = threading.Thread(target=read_stream, daemon=True)
     reader.start()
     try:
-        while reader.is_alive():
-            reader.join(timeout=0.1)
-        return proc.wait() == 0, session_id
+        while reader.is_alive() or stderr_reader.is_alive():
+             reader.join(timeout=0.1)
+             stderr_reader.join(timeout=0.1)
+        
+        exit_code = proc.wait()
+        if exit_code != 0:
+            log(f"claude failed with exit code {exit_code}")
+            if stderr_output:
+                log("--- stderr start ---")
+                for line in stderr_output:
+                    print(line)
+                log("--- stderr end ---")
+            if stdout_garbage:
+                log("--- stdout garbage start ---")
+                for line in stdout_garbage:
+                    print(line)
+                log("--- stdout garbage end ---")
+        return exit_code == 0, session_id
     except KeyboardInterrupt:
         proc.kill()
         proc.wait()
@@ -348,70 +437,61 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
 # --- task planning ---
 
 PLAN_PROMPT = """\
-You are the factory's planning agent. Your only job right now is to decide
-what the single best next task is and write it as a task file.
+You are the factory's planning agent. Your job is to decide the next best step for this repository.
+You operate on three levels:
+1.  **Initiatives**: High-level projects (found in `initiatives/`).
+2.  **Agents**: Specialists to execute those projects (found in `agents/`).
+3.  **Tasks**: Atomic units of work (found in `tasks/`).
 
-## Step 1: Understand where things stand
+## Step 1: Analyze State
+-   Read `CLAUDE.md` to understand the Purpose.
+-   List files in `initiatives/`. Are there any active ones?
+-   List files in `agents/`. Do we have the right specialists?
 
-Read this worktree's `CLAUDE.md` — specifically the Purpose, Measures, and
-Tests sections. These define what "better" means for this repo.
+## Step 2: Prioritize "Meta-Work"
+Before doing work, ensure we have the *structure* to do it.
 
-Then review `tasks/` to understand what has already been done (completed
-tasks), what was attempted but didn't finish (incomplete/failed tasks), and
-what patterns have emerged.
+**Rules for Meta-Work:**
+1.  **Missing Initiatives**: If there are fewer than 3 active initiatives, create a Task to "Draft a new Initiative".
+    -   *Task Prompt*: "Read CLAUDE.md. Create a file `initiatives/YYYY-slug.md` for a high-impact project. Use frontmatter `status: active`, `priority: high`."
+2.  **Missing Agents**: If an active Initiative requires a specialist (e.g., "Migrate DB") but no suitable Agent exists in `agents/`, create a Task to "Create Agent".
+    -   *Task Prompt*: "Create a file `agents/db-migration-specialist.md`. Define a system prompt and tools for an agent that specializes in database migrations."
 
-Then read the source repo to understand the current state of the actual code.
-Look at the structure, the quality, the gaps. Don't just skim — read enough
-to form a real opinion about what matters most right now.
+## Step 3: Prioritize Execution
+If structure is good, move the work forward.
 
-## Step 2: Decide what to do next
+**Rules for Execution:**
+1.  Pick the highest priority Active Initiative.
+2.  Read it. What is the next step?
+3.  Create a strict, atomic Task to do that step.
+    -   **Important**: Assign the Task to the right Agent by adding `agent: agents/name.md` to the frontmatter.
+    -   *Task Prompt*: "Advance Initiative X by doing Y."
+4.  Apply these quality gates before writing the task:
+    -   **Purpose alignment**: Does it directly advance an item in the Operational Purpose? Does it move a needle described in Measures?
+    -   **Foundation first**: Prefer work that unblocks or compounds future work. Tests before features. Structure before polish. Contracts before implementations.
+    -   **Concreteness**: The task must name specific files, functions, or behaviors.
+    -   **Right-sized**: A single task should be completable in one agent session. If the improvement is large, find the smallest slice that delivers value on its own.
+    -   **No repetition**: Don't redo work that's already been completed. Don't create a task that duplicates or overlaps with existing tasks.
+    -   **Don't plan ahead**: Write exactly one task. Don't create a backlog.
 
-Pick the single highest-leverage improvement. Use these criteria:
+## Step 4: Write the Task File
+Create a file in `tasks/` named `{today}-slug.md`.
 
-1. **Purpose alignment** — Does it directly advance an item in the
-   Operational Purpose? Does it move a needle described in Measures?
-2. **Foundation first** — Prefer work that unblocks or compounds future
-   work. Tests before features. Structure before polish. Contracts before
-   implementations.
-3. **Concreteness** — The task must name specific files, functions, or
-   behaviors. "Improve error handling" is too vague. "Add error context to
-   the parse_task function when YAML frontmatter is malformed" is concrete.
-4. **Right-sized** — A single task should be completable in one agent
-   session. If the improvement is large, find the smallest slice that
-   delivers value on its own.
-5. **No repetition** — Don't redo work that's already been completed.
-   Check completed tasks carefully. Don't create a task that duplicates
-   or overlaps with an existing one.
-6. **Don't plan ahead** — Write exactly one task. Don't create a backlog.
-   The factory will call you again when this task is done.
+**Format:**
+```markdown
+---
+tools: Read,Write,Edit,Bash
+agent: agents/specialist.md  # Optional: only if a specific agent should run this
+---
 
-## Step 3: Write the task file
+The prompt. Be specific.
 
-Create a file in `tasks/` named `{today}-slug.md` where `{today}` is today's
-date (YYYY-MM-DD format) and `slug` is a short kebab-case description.
+## Done
+- `file_exists(...)`
+...
+```
 
-Follow the task format documented in `CLAUDE.md`. Include:
-
-- **Frontmatter** with `tools` (only the tools the task actually needs).
-- **Prompt body** — Clear, specific instructions. Name files and functions.
-  Describe the desired behavior, not just "fix" or "improve".
-- **`## Done`** — Concrete completion conditions the runner can verify
-  mechanically. Use the condition types from CLAUDE.md. Every task must
-  be verifiable without human judgment.
-- **`## Context`** — Why this task matters. Reference specific items from
-  Purpose, Measures, or Tests. This helps the executing agent understand
-  the "why" and make better judgment calls.
-- **`## Verify`** — How the executing agent should check its own work
-  before committing. Concrete commands, files to inspect, behaviors to
-  confirm.
-
-After writing the task file, `git add` and `git commit` it with the message
-`New Task: <slug>` where `<slug>` is the task name.
-
-Do NOT set a `parent` field unless the task genuinely depends on another
-task that hasn't completed yet.
-
-Write one task, commit it, and stop.
+Write exactly one task. Commit it.
 """
 
 def plan_next_task():
@@ -459,7 +539,17 @@ def run():
             if section in task["sections"]:
                 prompt_parts.append(f"## {section.title()}\n\n{task['sections'][section]}")
         prompt = "\n\n".join(prompt_parts)
-        ok, session_id = run_claude(prompt, allowed_tools=task["tools"])
+        
+        # Load agent if specified
+        agent_def = None
+        if task.get("agent"):
+            # strip "agents/" prefix if present to get name
+            agent_name = task["agent"].replace("agents/", "").replace(".md", "")
+            agent_def = load_agent(agent_name)
+            if agent_def:
+                log(f"using agent: {agent_name}")
+
+        ok, session_id = run_claude(prompt, allowed_tools=task["tools"], agent=agent_def)
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
@@ -513,9 +603,11 @@ is your entire instruction for that run. You MUST follow these rules:
 2. **Commit your work.** When you are done, \`git add\` and \`git commit\` the
    files you changed. Use a short, descriptive commit message that summarizes
    what you did — not the task name, not a prefix, just what changed.
-3. **Do not modify this file beyond what a task asks.** If a task tells you to
+3. **Branch naming.** If you create branches for task work, use names prefixed
+   with \`factory/\` (for example \`factory/fix-task-parser\`).
+4. **Do not modify this file beyond what a task asks.** If a task tells you to
    add sections to \`CLAUDE.md\`, do that. Otherwise leave it alone.
-4. **Stop when done.** Do not loop, do not start the next task, do not look
+5. **Stop when done.** Do not loop, do not start the next task, do not look
    for more work. Complete your task, commit, and stop.
 
 ## Task format
@@ -580,6 +672,9 @@ If your task creates follow-up tasks, set the \`parent\` field in the new
 task's frontmatter to the filename of the current task so the runner
 knows the dependency order.
 CLAUDE
+
+# --- write factory marker ---
+printf "don't touch this\n" > "$WORKTREE/FACTORY.md"
 
 # --- write bootstrap task ---
 cat > "$WORKTREE/tasks/$(date +%Y-%m-%d)-define-purpose.md" <<'TASK'
@@ -725,6 +820,9 @@ WORKTREE_GITIGNORE="$WORKTREE/.gitignore"
 if [[ ! -f "$WORKTREE_GITIGNORE" ]] || ! grep -qxF "state/" "$WORKTREE_GITIGNORE"; then
   printf "\nstate/\n" >> "$WORKTREE_GITIGNORE"
 fi
+if ! grep -qxF "FACTORY.md" "$WORKTREE_GITIGNORE"; then
+  printf "FACTORY.md\n" >> "$WORKTREE_GITIGNORE"
+fi
 
 # --- install post-commit hook for worktree ---
 cat > "$WORKTREE/hooks/post-commit" <<'HOOK'
@@ -740,7 +838,7 @@ TASK_FILE="$(ls "$WORKTREE/tasks/"*.md 2>/dev/null | head -1)"
 TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
 (
   cd "$WORKTREE"
-  git add -f .gitignore CLAUDE.md "$PY_NAME" factory.sh hooks/
+  git add -f .gitignore CLAUDE.md FACTORY.md "$PY_NAME" factory.sh hooks/
   git commit -m "Bootstrap" >/dev/null 2>&1 || true
   git add -f tasks/
   git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
@@ -749,14 +847,14 @@ TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\
 # --- init ---
 (
   cd "$WORKTREE"
-  python3 "$PY_NAME" init
+  FACTORY_BRANCH="$BRANCH" python3 "$PY_NAME" init
 ) || { echo -e "\033[33mfactory:\033[0m init failed — aborting"; git worktree remove --force "$WORKTREE" 2>/dev/null || true; exit 1; }
 
 # --- replace this installer with a launcher script (skip in dev mode) ---
 if [[ "$DEV_MODE" == true ]]; then
   echo -e "\033[33mfactory:\033[0m dev mode — worktree at .git-factory/worktree"
   cd "$WORKTREE"
-  exec python3 "$PY_NAME"
+  FACTORY_BRANCH="$BRANCH" exec python3 "$PY_NAME"
 fi
 
 SCRIPT_PATH="$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$0")"
@@ -769,6 +867,9 @@ cat > "$LAUNCHER" <<'LAUNCH'
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+REPO="$(basename "$ROOT")"
+REPO_SLUG="$(printf '%s' "$REPO" | tr -c '[:alnum:]._-/' '-' | sed 's/^-*//; s/-*$//')"
+BRANCH="factory/${REPO_SLUG:-repo}"
 FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
 PY_NAME="factory.py"
@@ -800,9 +901,9 @@ if [[ "${1:-}" == "destroy" ]]; then
   echo -e "\033[33mfactory:\033[0m removed .git-factory/"
 
   # delete factory branches
-  if git show-ref --verify --quiet "refs/heads/factory"; then
-    git branch -D factory >/dev/null 2>&1 || true
-    echo -e "\033[33mfactory:\033[0m deleted 'factory' branch"
+  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git branch -D "$BRANCH" >/dev/null 2>&1 || true
+    echo -e "\033[33mfactory:\033[0m deleted '$BRANCH' branch"
   fi
 
   # remove this launcher
@@ -812,7 +913,7 @@ if [[ "${1:-}" == "destroy" ]]; then
 fi
 
 cd "$WORKTREE"
-exec python3 "$PY_NAME"
+FACTORY_BRANCH="$BRANCH" exec python3 "$PY_NAME"
 LAUNCH
 chmod +x "$LAUNCHER"
 
@@ -826,4 +927,4 @@ echo -e "\033[33mfactory:\033[0m run ./factory to start"
 
 # --- run in foreground so user sees output ---
 cd "$WORKTREE"
-exec python3 "$PY_NAME"
+FACTORY_BRANCH="$BRANCH" exec python3 "$PY_NAME"

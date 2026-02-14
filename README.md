@@ -99,7 +99,6 @@ Listed in the `## Done` section, one per line. All must pass.
 | `file_contains("path", "text")` | file exists and contains text |
 | `file_missing_text("path", "text")` | file missing or doesn't contain text |
 | `command("cmd")` | shell command exits 0 |
-| `always` | never completes (recurring task) |
 
 ### Runtime state
 
