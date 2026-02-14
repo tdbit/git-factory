@@ -793,7 +793,7 @@ PY
 chmod +x "$WORKTREE/$PY_NAME"
 
 # --- write CLAUDE.md (metadata only) ---
-cat > "$WORKTREE/CLAUDE.md" <<'CLAUDE'
+cat > "$WORKTREE/CLAUDE.md" <<CLAUDE
 # Factory
 
 Automated software factory for \`$REPO\`.
@@ -833,9 +833,9 @@ is your entire instruction for that run. You MUST follow these rules:
 
 All work is organized in flat folders:
 
-- `initiatives/`
-- `projects/`
-- `tasks/`
+- \`initiatives/\`
+- \`projects/\`
+- \`tasks/\`
 
 There is no folder nesting. Relationships are defined by frontmatter fields.
 
@@ -843,22 +843,22 @@ There is no folder nesting. Relationships are defined by frontmatter fields.
 
 All initiatives, projects, and tasks use the same lifecycle states:
 
-- `backlog` — defined but not active
-- `active` — currently in play
-- `suspended` — intentionally paused
-- `completed` — finished successfully
-- `stopped` — ended and will not resume
+- \`backlog\` — defined but not active
+- \`active\` — currently in play
+- \`suspended\` — intentionally paused
+- \`completed\` — finished successfully
+- \`stopped\` — ended and will not resume
 
-There is no `failed` state.
+There is no \`failed\` state.
 Failure is represented as:
 status: stopped
 stop_reason: failed
 
 ### Structural Relationships
 
-- `parent:` links a task → project or project → initiative.
-- `previous:` defines sequential dependency between tasks.
-- No `parent` means the task is a **factory maintenance task**.
+- \`parent:\` links a task → project or project → initiative.
+- \`previous:\` defines sequential dependency between tasks.
+- No \`parent\` means the task is a **factory maintenance task**.
 
 ### Scarcity Invariants (Must Always Hold)
 
@@ -877,7 +877,7 @@ When planning or selecting work, you may only read items with:
 
 status ∈ (active, backlog, suspended)
 
-You must ignore `completed` and `stopped` items unless explicitly investigating regressions.
+You must ignore \`completed\` and \`stopped\` items unless explicitly investigating regressions.
 
 Completed work lives in git history. It does not remain active context.
 
@@ -889,7 +889,7 @@ Before creating new initiatives, projects, or tasks:
 
 1. Check whether an active item already exists at that level.
 2. Refine or extend existing work before creating parallel work.
-3. Default to `backlog` when creating new items.
+3. Default to \`backlog\` when creating new items.
 4. Activate exactly one new item per layer when required.
 
 Creation is a last resort.
@@ -953,7 +953,7 @@ Author-set fields:
 Runner-managed fields (set automatically, do not write these yourself):
 
 - **status** — lifecycle state: \`backlog\`, \`active\`, \`suspended\`, \`completed\`, \`stopped\`
-- **stop_reason** — required if `status: stopped`
+- **stop_reason** — required if \`status: stopped\`
 - **pid** — process ID of the runner
 - **session** — Claude session ID
 - **branch** — git branch the task ran on
