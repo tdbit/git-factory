@@ -953,12 +953,6 @@ Automated software factory for \`$REPO\`.
 
 Source repo: \`$ROOT\`
 Factory dir: \`$FACTORY_DIR\`
-Runner: \`factory.py\`
-Initiatives: \`initiatives/\`
-Projects: \`projects/\`
-Tasks: \`tasks/\`
-Agents: \`agents/\`
-State: \`state/\`
 
 You are a coding agent operating inside \`.factory/\`, a standalone git repo that
 tracks factory metadata (tasks, projects, initiatives, agents). This directory
@@ -1012,8 +1006,11 @@ All initiatives, projects, and tasks use the same lifecycle states:
 
 There is no \`failed\` state.
 Failure is represented as:
+
+\`\`\`yaml
 status: stopped
 stop_reason: failed
+\`\`\`
 
 ### Structural Relationships
 
@@ -1082,6 +1079,7 @@ Completion conditions checked by the runner after the agent finishes.
 One condition per line. All must pass. Supported conditions:
 
 - \\\`section_exists("text")\\\` — text appears in CLAUDE.md
+- \\\`no_section("text")\\\` — text does not appear in CLAUDE.md
 - \\\`file_exists("path")\\\` — file exists in the worktree
 - \\\`file_absent("path")\\\` — file does not exist
 - \\\`file_contains("path", "text")\\\` — file contains text
@@ -1121,7 +1119,7 @@ Runner-managed fields (set automatically, do not write these yourself):
 
 ### Creating follow-up tasks
 
-If your task creates follow-up tasks, set the \`parent\` field in the new
+If your task creates follow-up tasks, set the \`previous\` field in the new
 task's frontmatter to the filename of the current task so the runner
 knows the dependency order.
 CLAUDE
