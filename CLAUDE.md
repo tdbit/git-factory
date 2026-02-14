@@ -30,8 +30,11 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.git-factory/worktree/` | Git worktree on the `factory` branch |
 | `.git-factory/worktree/factory.py` | Python orchestrator |
 | `.git-factory/worktree/CLAUDE.md` | Agent's operating instructions (Purpose/Measures/Tests) |
+| `.git-factory/worktree/agents/` | Agent persona definitions (markdown) |
+| `.git-factory/worktree/initiatives/` | High-level goals (YYYY-slug.md) |
+| `.git-factory/worktree/projects/` | Mid-level projects (YYYY-MM-slug.md) |
 | `.git-factory/worktree/tasks/` | Task queue (markdown files with YAML frontmatter) |
-| `.git-factory/worktree/state/` | Runtime state (pid, claude path, init timestamp) |
+| `.git-factory/worktree/state/` | Runtime state (pid, agent cli path, init timestamp) |
 
 ## Code layout
 
@@ -80,7 +83,6 @@ Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each has YAML f
 
 ```bash
 bash -n factory.sh                                                  # shell syntax check
-python3 -c "import ast; ast.parse(open('factory.sh').read())"       # won't work (it's bash with embedded python)
 ```
 
 The embedded Python can be validated after extraction into the worktree:
