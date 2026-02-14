@@ -1435,7 +1435,7 @@ GI
   local TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
   (
     cd "$FACTORY_DIR"
-    git add -f .gitignore CLAUDE.md FACTORY.md "$PY_NAME" factory.sh hooks/
+    git add -A
     git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
     git add -f tasks/
     git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
