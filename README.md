@@ -131,7 +131,7 @@ Removes `.git-factory/`, deletes the `factory` branch, restores the original `fa
 
 ## Requirements
 
-- [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI (or `claude-code`) on `PATH`
+- [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI, `claude-code`, or `codex` on `PATH`
 - `git`
 - `python3`
 - `bash`

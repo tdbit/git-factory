@@ -13,8 +13,7 @@ for cmd in git python3; do
 done
 
 REPO="$(basename "$ROOT")"
-REPO_SLUG="$(printf '%s' "$REPO" | tr -c '[:alnum:]._-/' '-' | sed 's/^-*//; s/-*$//')"
-BRANCH="factory/${REPO_SLUG:-repo}"
+BRANCH="factory/$REPO"
 FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
 PY_NAME="factory.py"
@@ -85,7 +84,7 @@ fi
 git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
 
 # --- write python runner into worktree ---
-mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state" "$WORKTREE/agents" "$WORKTREE/initiatives"
+mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state" "$WORKTREE/agents" "$WORKTREE/initiatives" "$WORKTREE/projects"
 cat > "$WORKTREE/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast
@@ -98,6 +97,7 @@ BRANCH = os.environ.get("FACTORY_BRANCH", "factory/repo")
 TASKS_DIR = ROOT / "tasks"
 AGENTS_DIR = ROOT / "agents"
 INITIATIVES_DIR = ROOT / "initiatives"
+PROJECTS_DIR = ROOT / "projects"
 STATE_DIR = ROOT / "state"
 
 def log(msg):
@@ -106,18 +106,19 @@ def log(msg):
 def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
 
-def require_claude():
-    for cmd in ("claude", "claude-code"):
+def require_agent_cli():
+    for cmd in ("codex", "claude", "claude-code"):
         path = shutil.which(cmd)
         if path:
-            return path
-    log("claude (or claude-code) not found on PATH")
+            return cmd, path
+    log("no supported agent CLI found on PATH (tried: claude, claude-code, codex)")
     return None
 
 def init():
-    claude = require_claude()
-    if not claude:
+    cli = require_agent_cli()
+    if not cli:
         return 1
+    cli_name, cli_path = cli
     branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
     if branch != BRANCH:
         log(f"not on factory branch ({BRANCH}): {branch}")
@@ -125,8 +126,12 @@ def init():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     AGENTS_DIR.mkdir(exist_ok=True)
     INITIATIVES_DIR.mkdir(exist_ok=True)
+    PROJECTS_DIR.mkdir(exist_ok=True)
     (STATE_DIR / "initialized.txt").write_text(time.ctime() + "\n")
-    (STATE_DIR / "claude_path.txt").write_text(claude + "\n")
+    (STATE_DIR / "agent_cli_name.txt").write_text(cli_name + "\n")
+    (STATE_DIR / "agent_cli_path.txt").write_text(cli_path + "\n")
+    # back-compat for older tooling that reads this file name
+    (STATE_DIR / "claude_path.txt").write_text(cli_path + "\n")
     return 0
 
 # --- helpers ---
@@ -172,6 +177,24 @@ def get_active_initiative():
     # sort by priority desc, then alphanumeric
     initiatives.sort(key=lambda x: (-x[0], x[1].name))
     return initiatives[0][1] # return path
+
+def get_active_project():
+    """Find the highest priority active project."""
+    if not PROJECTS_DIR.exists():
+        return None
+    projects = []
+    for f in PROJECTS_DIR.glob("*.md"):
+        text = f.read_text()
+        if "status: active" in text: # simple check
+            priority = 0
+            if "priority: high" in text: priority = 3
+            elif "priority: medium" in text: priority = 2
+            elif "priority: low" in text: priority = 1
+            projects.append((priority, f))
+    if not projects:
+        return None
+    projects.sort(key=lambda x: (-x[0], x[1].name))
+    return projects[0][1]
 
 # --- task parsing ---
 
@@ -222,6 +245,7 @@ def parse_task(path):
         "name": name,
         "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
         "agent": meta.get("agent", ""),
+        "project": meta.get("project", ""),
         "done": done_lines,
         "parent": meta.get("parent", ""),
         "prompt": "\n".join(prompt_lines).strip(),
@@ -321,14 +345,15 @@ def next_task():
         return t
     return None
 
-# --- claude runner ---
+# --- agent runner ---
 
 
 def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None):
     import json as _json, threading
-    claude = require_claude()
-    if not claude:
+    cli = require_agent_cli()
+    if not cli:
         return False, None
+    cli_name, cli_path = cli
     
     # If agent is provided, inject its prompt
     full_prompt = prompt
@@ -337,8 +362,30 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
         if agent.get("tools"):
              allowed_tools = agent["tools"]
 
+    # codex CLI path: run in non-interactive exec mode
+    if cli_name == "codex":
+        proc = subprocess.Popen(
+            [cli_path, "exec", full_prompt],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=ROOT,
+        )
+        stdout, stderr = proc.communicate()
+        if stdout:
+            print(stdout.decode(errors="replace"), end="")
+        if proc.returncode != 0:
+            log(f"codex failed with exit code {proc.returncode}")
+            if stderr:
+                log("--- stderr start ---")
+                print(stderr.decode(errors="replace"), end="")
+                log("--- stderr end ---")
+        return proc.returncode == 0, None
+
+    # claude/claude-code path: structured stream-json mode
     proc = subprocess.Popen(
-        [claude, "--dangerously-skip-permissions", "-p", "--verbose",
+        [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
          "--output-format", "stream-json",
          full_prompt, "--allowedTools", allowed_tools],
         stdout=subprocess.PIPE,
@@ -438,36 +485,50 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
 
 PLAN_PROMPT = """\
 You are the factory's planning agent. Your job is to decide the next best step for this repository.
-You operate on three levels:
+You operate on four levels:
 1.  **Initiatives**: High-level projects (found in `initiatives/`).
-2.  **Agents**: Specialists to execute those projects (found in `agents/`).
-3.  **Tasks**: Atomic units of work (found in `tasks/`).
+2.  **Projects**: Executable workstreams under initiatives (found in `projects/`).
+3.  **Agents**: Specialists to execute those projects (found in `agents/`).
+4.  **Tasks**: Atomic units of work (found in `tasks/`).
 
 ## Step 1: Analyze State
 -   Read `CLAUDE.md` to understand the Purpose.
 -   List files in `initiatives/`. Are there any active ones?
+-   List files in `projects/`. Are there any active ones and are they tied to initiatives?
 -   List files in `agents/`. Do we have the right specialists?
 
 ## Step 2: Prioritize "Meta-Work"
 Before doing work, ensure we have the *structure* to do it.
 
+**Quality Gates by Abstraction Level (apply before creating any item):**
+-   **Initiative = Existential**: Must define the real-world outcome. Why this matters to users or the domain. Long-horizon direction, not implementation detail.
+-   **Project = Strategic**: Must compound over time. Clarify the leverage, sequencing, and capability being built across multiple tasks.
+-   **Task = Tactical**: Must be concrete and executable in one session with explicit files/commands/behaviors.
+
 **Rules for Meta-Work:**
 1.  **Missing Initiatives**: If there are fewer than 3 active initiatives, create a Task to "Draft a new Initiative".
     -   *Task Prompt*: "Read CLAUDE.md. Create a file `initiatives/YYYY-slug.md` for a high-impact project. Use frontmatter `status: active`, `priority: high`."
-2.  **Missing Agents**: If an active Initiative requires a specialist (e.g., "Migrate DB") but no suitable Agent exists in `agents/`, create a Task to "Create Agent".
+2.  **Missing Projects**: If active initiatives do not have active projects, create a Task to "Draft a new Project".
+    -   *Task Prompt*: "Create a file `projects/YYYY-slug.md` linked to one active initiative. Use frontmatter `initiative: initiatives/name.md`, `status: active`, `priority: high`."
+3.  **Missing Agents**: If an active Project requires a specialist (e.g., "Migrate DB") but no suitable Agent exists in `agents/`, create a Task to "Create Agent".
     -   *Task Prompt*: "Create a file `agents/db-migration-specialist.md`. Define a system prompt and tools for an agent that specializes in database migrations."
 
 ## Step 3: Prioritize Execution
 If structure is good, move the work forward.
 
 **Rules for Execution:**
-1.  Pick the highest priority Active Initiative.
+1.  Pick the highest priority Active Project (or create one first if missing).
 2.  Read it. What is the next step?
-3.  Create a strict, atomic Task to do that step.
+3.  Validate abstraction fit before creating work:
+    -   Initiative checks: existential outcome clarity, user/domain impact, no implementation-detail wording.
+    -   Project checks: strategic leverage, clear linkage to one initiative, decomposable into multiple tactical tasks.
+    -   Task checks: tactical specificity, mechanically verifiable done conditions, can complete in one session.
+4.  Create a strict, atomic Task to do that step.
     -   **Important**: Assign the Task to the right Agent by adding `agent: agents/name.md` to the frontmatter.
-    -   *Task Prompt*: "Advance Initiative X by doing Y."
-4.  Apply these quality gates before writing the task:
-    -   **Purpose alignment**: Does it directly advance an item in the Operational Purpose? Does it move a needle described in Measures?
+    -   **Important**: Link the Task to its Project via `project: projects/name.md`.
+    -   *Task Prompt*: "Advance Project X by doing Y."
+5.  Apply these task-level quality gates before writing the task:
+    -   **Purpose alignment**: Does it directly advance an item in the Tactical Purpose? Does it move a needle described in Measures?
     -   **Foundation first**: Prefer work that unblocks or compounds future work. Tests before features. Structure before polish. Contracts before implementations.
     -   **Concreteness**: The task must name specific files, functions, or behaviors.
     -   **Right-sized**: A single task should be completable in one agent session. If the improvement is large, find the smallest slice that delivers value on its own.
@@ -481,6 +542,7 @@ Create a file in `tasks/` named `{today}-slug.md`.
 ```markdown
 ---
 tools: Read,Write,Edit,Bash
+project: projects/name.md    # Required for execution tasks; omitted only for pure meta-work
 agent: agents/specialist.md  # Optional: only if a specific agent should run this
 ---
 
@@ -508,8 +570,8 @@ def plan_next_task():
 # --- main loop ---
 
 def run():
-    claude = require_claude()
-    if not claude:
+    cli = require_agent_cli()
+    if not cli:
         return
 
     TASKS_DIR.mkdir(exist_ok=True)
@@ -585,6 +647,7 @@ Source repo: \`$ROOT\`
 Worktree: \`$WORKTREE\`
 Runner: \`factory.py\`
 Tasks: \`tasks/\`
+Projects: \`projects/\`
 State: \`state/\`
 
 You are a coding agent operating inside a git worktree on the \`factory\` branch.
@@ -618,6 +681,7 @@ has YAML frontmatter for runner metadata, then a fixed set of markdown sections.
 \`\`\`markdown
 ---
 tools: Read,Write,Edit,Bash
+project: projects/name.md
 parent: YYYY-MM-DD-other-task.md
 ---
 
@@ -656,6 +720,7 @@ Author-set fields:
 
 - **tools** — which Claude Code tools the agent can use (default:
   \`Read,Write,Edit,Bash,Glob,Grep\`)
+- **project** — project file this task advances (example: \`projects/2026-auth-hardening.md\`)
 - **parent** — filename of a task that must complete first (dependency)
 
 Runner-managed fields (set automatically, do not write these yourself):
@@ -689,10 +754,10 @@ header.
 Your task is to add three sections to this worktree's CLAUDE.md: **Purpose**,
 **Measures**, and **Tests**.
 
-Each section has three levels of abstraction: **Operational**, **Strategic**,
+Each section has three levels of abstraction: **Tactical**, **Strategic**,
 and **Existential**.
 
-- **Operational** — what to improve next in this repository.
+- **Tactical** — what to improve next in this repository.
 - **Strategic** — what kinds of improvements compound over time.
 - **Existential** — what kind of system this repository should become long-term.
 
@@ -702,7 +767,7 @@ societal framing. Ground everything in what you observe in the actual repo.
 Bullet counts should expand as you move down the ladder:
 - Existential subsections: 3-5 bullets.
 - Strategic subsections: 5-10 bullets.
-- Operational subsections: 10-20 bullets.
+- Tactical subsections: 10-20 bullets.
 
 ---
 
@@ -724,7 +789,7 @@ what you observe in the repo. Examples: reduce complexity in core paths,
 improve developer ergonomics, prefer explicitness over magic, strengthen
 invariants and contracts, eliminate sources of brittleness.
 
-**Operational Purpose** (10-20 bullets) — Define immediate, repo-specific
+**Tactical Purpose** (10-20 bullets) — Define immediate, repo-specific
 priorities. Be concrete and name areas of the repo. Examples: simplify a
 confusing module, remove dead code, reduce test flakiness, improve error
 messages, clarify public APIs, reduce steps to run locally.
@@ -749,8 +814,8 @@ purpose — what would be true in the world if this software were succeeding?
 reduced complexity in core modules, faster test runs, fewer build steps,
 clearer documentation, less coupling between subsystems.
 
-**Operational Measures** (10-20 bullets) — Concrete, checkable signals tied
-directly to the operational purpose. Each one should answer: "How do I know
+**Tactical Measures** (10-20 bullets) — Concrete, checkable signals tied
+directly to the tactical purpose. Each one should answer: "How do I know
 this specific thing got better?" Examples: tests pass, lint clean, CI time
 decreased by N seconds, fewer TODOs in module X, setup runs in fewer steps,
 error message for Y now tells the user what to do, endpoint Z responds in
@@ -773,17 +838,17 @@ existing?
 Does it reduce brittleness? Does it remove duplication? Does it improve
 clarity in the most-used paths?
 
-**Operational Tests** (10-20 bullets) — Specific, answerable questions about
+**Tactical Tests** (10-20 bullets) — Specific, answerable questions about
 immediate outcomes. These should reference concrete commands, user actions, and
-the operational purpose and measures directly. Examples:
+the tactical purpose and measures directly. Examples:
 
 - What commands did you run to verify this works?
 - Do all tests pass? Which test suites did you run?
 - Does this make it easier for a user to [specific action]?
 - Does this make [specific operation] faster or more reliable?
 - Is the diff minimal for the behavior change achieved?
-- Does this satisfy [specific operational purpose item] according to
-  [specific operational measure]?
+- Does this satisfy [specific tactical purpose item] according to
+  [specific tactical measure]?
 - Did you check that [specific thing] did not regress?
 - Can a new contributor understand this change without extra context?
 - Does the error output tell the user what went wrong and what to do?
@@ -803,9 +868,9 @@ agent has no way to evaluate whether a change is worthwhile.
 ## Verify
 
 - Confirm `CLAUDE.md` contains `## Purpose`, `## Measures`, and `## Tests`
-  sections with Existential, Strategic, and Operational subsections.
+  sections with Existential, Strategic, and Tactical subsections.
 - Confirm each subsection has the right number of bullets (3-5 existential,
-  5-10 strategic, 10-20 operational).
+  5-10 strategic, 10-20 tactical).
 - Read the sections back and check they are grounded in the actual repo, not
   generic platitudes.
 TASK
@@ -868,8 +933,7 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 REPO="$(basename "$ROOT")"
-REPO_SLUG="$(printf '%s' "$REPO" | tr -c '[:alnum:]._-/' '-' | sed 's/^-*//; s/-*$//')"
-BRANCH="factory/${REPO_SLUG:-repo}"
+BRANCH="factory/$REPO"
 FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
 PY_NAME="factory.py"
