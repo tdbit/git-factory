@@ -67,7 +67,7 @@ teardown() {
 write_runner() {
 cat > "$FACTORY_DIR/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
-import os, sys, re, signal, time, shutil, subprocess, ast, json, atexit
+import os, sys, re, signal, time, shutil, subprocess, ast, json, threading, atexit
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -78,6 +78,7 @@ PROJECTS_DIR = ROOT / "projects"
 STATE_DIR = ROOT / "state"
 # parent repo — ROOT is .factory/, so parent is one level up
 PARENT_REPO = ROOT.parent
+DEFAULT_TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
 
 # --- config (written once at bootstrap) ---
 _config = None
@@ -211,10 +212,10 @@ def load_agent(name):
         return None
     text = path.read_text()
     if not text.startswith("---"):
-        return {"name": name, "prompt": text, "tools": "Read,Write,Edit,Bash,Glob,Grep"}
+        return {"name": name, "prompt": text, "tools": DEFAULT_TOOLS}
     parts = text.split("---", 2)
     if len(parts) < 3:
-        return {"name": name, "prompt": text, "tools": "Read,Write,Edit,Bash,Glob,Grep"}
+        return {"name": name, "prompt": text, "tools": DEFAULT_TOOLS}
     _, fm, body = parts
     meta = {}
     for line in fm.strip().splitlines():
@@ -224,7 +225,7 @@ def load_agent(name):
     return {
         "name": name,
         "prompt": body.strip(),
-        "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
+        "tools": meta.get("tools", DEFAULT_TOOLS),
     }
 
 
@@ -275,7 +276,7 @@ def parse_task(path):
     name = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", path.stem)
     return {
         "name": name,
-        "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
+        "tools": meta.get("tools", DEFAULT_TOOLS),
         "status": meta.get("status", ""),
         "agent": meta.get("agent", ""),
         "parent": meta.get("parent", ""),
@@ -313,11 +314,19 @@ def update_task_meta(task, **kwargs):
 
 # --- completion checks ---
 
+def _read_claude_md():
+    p = ROOT / "CLAUDE.md"
+    return p.read_text() if p.exists() else ""
+
+def _glob_matches(base, pat):
+    glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
+    if any(ch in glob_pat for ch in "*?[]"):
+        return any(base.glob(glob_pat))
+    return (base / pat).exists()
+
 def check_one_condition(cond, target_dir=None):
     base = target_dir or ROOT
-    if not cond:
-        return False
-    if cond == "always":
+    if not cond or cond == "always":
         return False
     m = re.match(r'(\w+)\((.+)\)$', cond)
     if not m:
@@ -333,27 +342,14 @@ def check_one_condition(cond, target_dir=None):
     except (ValueError, SyntaxError):
         log(f"check parse error: {cond}")
         return False
-    # section_exists/no_section always check the factory CLAUDE.md
     if func == "section_exists":
-        text = (ROOT / "CLAUDE.md").read_text() if (ROOT / "CLAUDE.md").exists() else ""
-        return args[0] in text
+        return args[0] in _read_claude_md()
     elif func == "no_section":
-        text = (ROOT / "CLAUDE.md").read_text() if (ROOT / "CLAUDE.md").exists() else ""
-        return args[0] not in text
+        return args[0] not in _read_claude_md()
     elif func == "file_exists":
-        pat = args[0]
-        glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
-        has_wild = any(ch in glob_pat for ch in "*?[]")
-        if has_wild or "YYYY" in pat:
-            return any(base.glob(glob_pat))
-        return (base / pat).exists()
+        return _glob_matches(base, args[0])
     elif func == "file_absent":
-        pat = args[0]
-        glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
-        has_wild = any(ch in glob_pat for ch in "*?[]")
-        if has_wild or "YYYY" in pat:
-            return not any(base.glob(glob_pat))
-        return not (base / pat).exists()
+        return not _glob_matches(base, args[0])
     elif func == "file_contains":
         p = base / args[0]
         return p.exists() and args[1] in p.read_text()
@@ -370,23 +366,15 @@ def check_one_condition(cond, target_dir=None):
     return False
 
 def check_done(done, target_dir=None):
-    """Check a list of done conditions. All must pass."""
     if not done:
         return False
     return all(check_one_condition(c, target_dir) for c in done)
 
 def check_done_details(done, target_dir=None):
-    """Return (all_passed, [(cond, passed), ...])."""
-    results = []
     if not done:
-        return False, results
-    all_passed = True
-    for cond in done:
-        ok = check_one_condition(cond, target_dir)
-        results.append((cond, ok))
-        if not ok:
-            all_passed = False
-    return all_passed, results
+        return False, []
+    results = [(c, check_one_condition(c, target_dir)) for c in done]
+    return all(ok for _, ok in results), results
 
 def next_task():
     tasks = load_tasks()
@@ -422,8 +410,7 @@ def _open_run_log(task_name=None):
     log_path = STATE_DIR / "last_run.jsonl"
     f = open(log_path, "w")
     if task_name:
-        import json as _json
-        f.write(_json.dumps({"type": "_factory", "task": task_name, "time": time.ctime()}) + "\n")
+        f.write(json.dumps({"type": "_factory", "task": task_name, "time": time.ctime()}) + "\n")
     return f
 
 def _build_prompt(prompt, allowed_tools, agent):
@@ -435,8 +422,7 @@ def _build_prompt(prompt, allowed_tools, agent):
             tools = agent["tools"]
     return full_prompt, tools
 
-def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cwd=None, run_log=None):
-    import threading, json as _json
+def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which("codex")
     if not cli_path:
         log("codex CLI not found on PATH")
@@ -531,7 +517,7 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
                         run_log.write(text + "\n")
                         run_log.flush()
                     try:
-                        ev = _json.loads(text)
+                        ev = json.loads(text)
                     except ValueError:
                         stdout_garbage.append(text)
                         continue
@@ -602,8 +588,7 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
     return False, None
 
 
-def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cli_name=None, cwd=None, run_log=None):
-    import json as _json, threading
+def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cli_name=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which(cli_name or "claude")
     if not cli_path:
         log("claude CLI not found on PATH")
@@ -652,7 +637,7 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
                 run_log.write(raw.decode(errors="replace") + "\n")
                 run_log.flush()
             try:
-                ev = _json.loads(raw)
+                ev = json.loads(raw)
             except ValueError:
                 stdout_garbage.append(raw.decode(errors='replace'))
                 continue
@@ -725,7 +710,7 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
         return False, session_id
 
 
-def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cwd=None, run_log=None):
+def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log=None):
     cli = get_agent_cli()
     if not cli:
         return False, None
