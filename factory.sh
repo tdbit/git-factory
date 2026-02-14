@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# factory.sh: main entry point for the factory. Sets up environment, checks dependencies,
+# and launches the Python runner that executes tasks.
+NOISES="Clanging Bing-banging Grinding Ka-chunking Ratcheting Hammering Whirring Pressing Stamping Riveting Welding Bolting Torqueing Clatter-clanking Thudding Shearing Punching Forging Sparking Sizzling Honing Milling Buffing Tempering Ka-thunking"
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-# --- dependency checks ---
+# Check dependencies (git, python3)
 for cmd in git python3; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo -e "\033[31mfactory:\033[0m error: '$cmd' is not installed." >&2
@@ -12,14 +15,11 @@ for cmd in git python3; do
   fi
 done
 
-REPO="$(basename "$ROOT")"
-BRANCH="factory/$REPO"
-FACTORY_DIR="${ROOT}/.git-factory"
-WORKTREE="${FACTORY_DIR}/worktree"
+FACTORY_DIR="${ROOT}/.factory"
 PROJECT_WORKTREES="${FACTORY_DIR}/worktrees"
 PY_NAME="factory.py"
 
-# --- ensure .git-factory dir is ignored locally ---
+# --- ensure .factory dir is ignored locally ---
 DEV_MODE=false
 if [[ "${1:-}" == "dev" ]]; then
   DEV_MODE=true
@@ -29,24 +29,21 @@ fi
 # --- dev reset: tear down without restoring factory.sh ---
 dev_reset() {
   # safety check: ensure FACTORY_DIR looks right
-  if [[ -z "$FACTORY_DIR" ]] || [[ "$FACTORY_DIR" != *".git-factory" ]]; then
+  if [[ -z "$FACTORY_DIR" ]] || [[ "$FACTORY_DIR" != *".factory" ]]; then
     echo "Error: unsafe FACTORY_DIR: $FACTORY_DIR"
     exit 1
   fi
 
-  # remove project worktrees under .git-factory/worktrees/
+  # remove project worktrees under .factory/worktrees/ (source repo worktrees)
   if [[ -d "$FACTORY_DIR/worktrees" ]]; then
     for wt in "$FACTORY_DIR/worktrees"/*/; do
       [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
     done
   fi
 
-  if [[ -d "$WORKTREE" ]]; then
-    git worktree remove --force "$WORKTREE" 2>/dev/null || rm -rf "$WORKTREE"
-  fi
   rm -rf "$FACTORY_DIR"
 
-  # delete factory branches: factory/<repo> + any project branches factory/*
+  # delete factory/* project branches
   git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
     git branch -D "$b" >/dev/null 2>&1 || true
   done
@@ -68,42 +65,43 @@ fi
 EXCLUDE_FILE="$ROOT/.git/info/exclude"
 mkdir -p "$(dirname "$EXCLUDE_FILE")"
 touch "$EXCLUDE_FILE"
-if ! grep -qxF "/.git-factory/" "$EXCLUDE_FILE"; then
-  printf "\n/.git-factory/\n" >> "$EXCLUDE_FILE"
+if ! grep -qxF "/.factory/" "$EXCLUDE_FILE"; then
+  printf "\n/.factory/\n" >> "$EXCLUDE_FILE"
 fi
 
-# --- create factory branch if missing ---
-if ! git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-  git branch "$BRANCH"
-  echo -e "\033[33mfactory:\033[0m created branch $BRANCH"
-fi
-
-# --- resume existing worktree or create fresh ---
-if [[ "$DEV_MODE" == false ]] && [[ -d "$WORKTREE" ]] && [[ -f "$WORKTREE/$PY_NAME" ]]; then
+# --- resume existing factory or create fresh ---
+if [[ "$DEV_MODE" == false ]] && [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
   echo -e "\033[33mfactory:\033[0m resuming"
-  cd "$WORKTREE"
+  cd "$FACTORY_DIR"
   exec python3 "$PY_NAME"
 fi
 
-# --- fresh setup: create worktree ---
+# --- fresh setup: create standalone factory repo ---
 mkdir -p "$FACTORY_DIR"
-if [[ -d "$WORKTREE" ]]; then
-  git worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
-  rm -rf "$WORKTREE" >/dev/null 2>&1 || true
-fi
-git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
+git init "$FACTORY_DIR" >/dev/null 2>&1
 
 # --- detect default branch ---
-DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")"
+DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')" || true
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  # no origin/HEAD — check which branch exists locally
+  if git show-ref --verify --quiet refs/heads/main; then
+    DEFAULT_BRANCH="main"
+  elif git show-ref --verify --quiet refs/heads/master; then
+    DEFAULT_BRANCH="master"
+  else
+    # last resort: current branch
+    DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  fi
+fi
 
-# --- write python runner into worktree ---
-for d in tasks hooks state agents initiatives projects; do
-  mkdir -p "$WORKTREE/$d"
+# --- write python runner into factory dir ---
+for d in tasks hooks state agents initiatives projects logs; do
+  mkdir -p "$FACTORY_DIR/$d"
 done
 mkdir -p "$PROJECT_WORKTREES"
-printf "%s\n" "$DEFAULT_BRANCH" > "$WORKTREE/state/default_branch.txt"
-printf "%s\n" "$PROJECT_WORKTREES" > "$WORKTREE/state/project_worktrees.txt"
-cat > "$WORKTREE/$PY_NAME" <<'PY'
+printf "%s\n" "$DEFAULT_BRANCH" > "$FACTORY_DIR/state/default_branch.txt"
+printf "%s\n" "$PROJECT_WORKTREES" > "$FACTORY_DIR/state/project_worktrees.txt"
+cat > "$FACTORY_DIR/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast
 from pathlib import Path
@@ -111,27 +109,13 @@ from pathlib import Path
 import atexit
 
 ROOT = Path(__file__).resolve().parent
-def _detect_branch():
-    env = os.environ.get("FACTORY_BRANCH", "").strip()
-    if env:
-        return env
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=Path(__file__).resolve().parent,
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
-    except Exception:
-        return "factory/repo"
-
-BRANCH = _detect_branch()
 TASKS_DIR = ROOT / "tasks"
 AGENTS_DIR = ROOT / "agents"
 INITIATIVES_DIR = ROOT / "initiatives"
 PROJECTS_DIR = ROOT / "projects"
 STATE_DIR = ROOT / "state"
-# parent repo git dir — ROOT is .git-factory/worktree, so parent is two levels up
-PARENT_REPO = ROOT.parent.parent
+# parent repo — ROOT is .factory/, so parent is one level up
+PARENT_REPO = ROOT.parent
 
 def _get_default_branch():
     p = STATE_DIR / "default_branch.txt"
@@ -155,7 +139,7 @@ def _get_project_worktrees_dir():
         val = p.read_text().strip()
         if val:
             return Path(val)
-    return ROOT.parent / "worktrees"
+    return ROOT / "worktrees"
 
 def project_worktree_dir(project_path):
     return _get_project_worktrees_dir() / project_slug(project_path)
@@ -259,10 +243,6 @@ def init():
     if not cli:
         return 1
     cli_name, cli_path = cli
-    branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
-    if branch != BRANCH:
-        log(f"not on factory branch ({BRANCH}): {branch}")
-        return 2
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     AGENTS_DIR.mkdir(exist_ok=True)
     INITIATIVES_DIR.mkdir(exist_ok=True)
@@ -986,8 +966,7 @@ def run():
         else:
             work_dir = ROOT
 
-        branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
-        update_task_meta(task, status="active", pid=str(os.getpid()), branch=branch)
+        update_task_meta(task, status="active", pid=str(os.getpid()))
         commit_task(task, f"Start Task: {name}")
         # build prompt: instruction body + context + verify (exclude done)
         prompt_parts = [task["prompt"]]
@@ -1060,17 +1039,17 @@ if __name__ == "__main__":
         raise SystemExit(init())
     run()
 PY
-chmod +x "$WORKTREE/$PY_NAME"
+chmod +x "$FACTORY_DIR/$PY_NAME"
 
 # --- write CLAUDE.md (metadata only) ---
-cat > "$WORKTREE/CLAUDE.md" <<CLAUDE
+REPO="$(basename "$ROOT")"
+cat > "$FACTORY_DIR/CLAUDE.md" <<CLAUDE
 # Factory
 
 Automated software factory for \`$REPO\`.
 
 Source repo: \`$ROOT\`
 Factory dir: \`$FACTORY_DIR\`
-Worktree: \`$WORKTREE\`
 Runner: \`factory.py\`
 Initiatives: \`initiatives/\`
 Projects: \`projects/\`
@@ -1078,16 +1057,14 @@ Tasks: \`tasks/\`
 Agents: \`agents/\`
 State: \`state/\`
 
-You are a coding agent operating inside \`$FACTORY_DIR\`. You can only make 
-changes to worktrees located in this directory.
-
-The main factory worktree is \`$WORKTREE\` and the main branch is
-\`$BRANCH\`.  This is where you track your work and the state of tasks,
-projects, and initiatives.
+You are a coding agent operating inside \`.factory/\`, a standalone git repo that
+tracks factory metadata (tasks, projects, initiatives, agents). This directory
+is separate from the source repo.
 
 Project-specific tasks for the source repo will have separate worktrees created
-under \`$FACTORY_DIR/worktrees/\` each with its own branch prefixed with \`factory/\`. This
-is where you will do the actual code changes related to the source repo.
+under \`worktrees/\` each with its own branch prefixed with \`factory/\` in the
+source repo. This is where you will do the actual code changes related to the
+source repo.
 
 Do not modify any files outside of these worktrees.
 
@@ -1237,7 +1214,6 @@ Runner-managed fields (set automatically, do not write these yourself):
 - **stop_reason** — required if \`status: stopped\`
 - **pid** — process ID of the runner
 - **session** — Claude session ID
-- **branch** — git branch the task ran on
 - **commit** — HEAD commit hash when the task completed
 
 ### Creating follow-up tasks
@@ -1248,10 +1224,10 @@ knows the dependency order.
 CLAUDE
 
 # --- write factory marker ---
-printf "don't touch this\n" > "$WORKTREE/FACTORY.md"
+printf "don't touch this\n" > "$FACTORY_DIR/FACTORY.md"
 
 # --- write bootstrap task ---
-cat > "$WORKTREE/tasks/$(date +%Y-%m-%d)-define-purpose.md" <<'TASK'
+cat > "$FACTORY_DIR/tasks/$(date +%Y-%m-%d)-define-purpose.md" <<'TASK'
 ---
 tools: Read,Write,Edit,Bash
 ---
@@ -1383,34 +1359,28 @@ agent has no way to evaluate whether a change is worthwhile.
   generic platitudes.
 TASK
 
-# --- copy .gitignore from source repo ---
-if [[ -f "$ROOT/.gitignore" ]]; then
-  cp "$ROOT/.gitignore" "$WORKTREE/.gitignore"
-fi
+# --- write factory .gitignore ---
+cat > "$FACTORY_DIR/.gitignore" <<'GI'
+state/
+logs/
+worktrees/
+FACTORY.md
+GI
 
-# --- ignore state/ in worktree ---
-WORKTREE_GITIGNORE="$WORKTREE/.gitignore"
-if [[ ! -f "$WORKTREE_GITIGNORE" ]] || ! grep -qxF "state/" "$WORKTREE_GITIGNORE"; then
-  printf "\nstate/\n" >> "$WORKTREE_GITIGNORE"
-fi
-if ! grep -qxF "FACTORY.md" "$WORKTREE_GITIGNORE"; then
-  printf "FACTORY.md\n" >> "$WORKTREE_GITIGNORE"
-fi
-
-# --- install post-commit hook for worktree ---
-cat > "$WORKTREE/hooks/post-commit" <<'HOOK'
+# --- install post-commit hook ---
+cat > "$FACTORY_DIR/hooks/post-commit" <<'HOOK'
 #!/usr/bin/env bash
 echo -e "\033[33mfactory:\033[0m NEW COMMIT"
 HOOK
-chmod +x "$WORKTREE/hooks/post-commit"
-git -C "$WORKTREE" config core.hooksPath hooks
+chmod +x "$FACTORY_DIR/hooks/post-commit"
+git -C "$FACTORY_DIR" config core.hooksPath hooks
 
-# --- copy original installer into worktree and commit ---
-cp "$0" "$WORKTREE/factory.sh"
-TASK_FILE="$(ls "$WORKTREE/tasks/"*.md 2>/dev/null | head -1)"
+# --- copy original installer and commit ---
+cp "$0" "$FACTORY_DIR/factory.sh"
+TASK_FILE="$(ls "$FACTORY_DIR/tasks/"*.md 2>/dev/null | head -1)"
 TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
 (
-  cd "$WORKTREE"
+  cd "$FACTORY_DIR"
   git add -f .gitignore CLAUDE.md FACTORY.md "$PY_NAME" factory.sh hooks/
   git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
   git add -f tasks/
@@ -1419,15 +1389,15 @@ TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\
 
 # --- init ---
 (
-  cd "$WORKTREE"
-  FACTORY_BRANCH="$BRANCH" python3 "$PY_NAME" init
-) || { echo -e "\033[33mfactory:\033[0m init failed — aborting"; git worktree remove --force "$WORKTREE" 2>/dev/null || true; exit 1; }
+  cd "$FACTORY_DIR"
+  python3 "$PY_NAME" init
+) || { echo -e "\033[33mfactory:\033[0m init failed — aborting"; rm -rf "$FACTORY_DIR"; exit 1; }
 
 # --- replace this installer with a launcher script (skip in dev mode) ---
 if [[ "$DEV_MODE" == true ]]; then
-  echo -e "\033[33mfactory:\033[0m dev mode — worktree at .git-factory/worktree"
-  cd "$WORKTREE"
-  FACTORY_BRANCH="$BRANCH" exec python3 "$PY_NAME"
+  echo -e "\033[33mfactory:\033[0m dev mode — factory at .factory/"
+  cd "$FACTORY_DIR"
+  exec python3 "$PY_NAME"
 fi
 
 SCRIPT_PATH="$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$0")"
@@ -1440,16 +1410,13 @@ cat > "$LAUNCHER" <<'LAUNCH'
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-REPO="$(basename "$ROOT")"
-BRANCH="factory/$REPO"
-FACTORY_DIR="${ROOT}/.git-factory"
-WORKTREE="${FACTORY_DIR}/worktree"
+FACTORY_DIR="${ROOT}/.factory"
 PY_NAME="factory.py"
 
 if [[ "${1:-}" == "destroy" ]]; then
   echo "This will permanently remove:"
-  echo "  - .git-factory/ (worktree + state)"
-  echo "  - factory branch"
+  echo "  - .factory/ (standalone factory repo)"
+  echo "  - factory/* project branches"
   echo "  - ./factory launcher"
   echo ""
   printf "Type 'yes' to confirm: "
@@ -1459,27 +1426,23 @@ if [[ "${1:-}" == "destroy" ]]; then
     exit 1
   fi
 
-  # restore factory.sh from the worktree commit before destroying
-  if [[ -f "$WORKTREE/factory.sh" ]]; then
-    cp "$WORKTREE/factory.sh" "$ROOT/factory.sh"
+  # restore factory.sh before destroying
+  if [[ -f "$FACTORY_DIR/factory.sh" ]]; then
+    cp "$FACTORY_DIR/factory.sh" "$ROOT/factory.sh"
     echo -e "\033[33mfactory:\033[0m restored factory.sh"
   fi
 
-  # remove project worktrees under .git-factory/worktrees/
+  # remove project worktrees (source repo worktrees)
   if [[ -d "$FACTORY_DIR/worktrees" ]]; then
     for wt in "$FACTORY_DIR/worktrees"/*/; do
       [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
     done
   fi
 
-  # remove factory worktree then .git-factory dir
-  if [[ -d "$WORKTREE" ]]; then
-    git worktree remove --force "$WORKTREE" 2>/dev/null || rm -rf "$WORKTREE"
-  fi
   rm -rf "$FACTORY_DIR"
-  echo -e "\033[33mfactory:\033[0m removed .git-factory/"
+  echo -e "\033[33mfactory:\033[0m removed .factory/"
 
-  # delete all factory branches (factory/<repo> + project branches)
+  # delete factory/* project branches
   git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
     git branch -D "$b" >/dev/null 2>&1 || true
     echo -e "\033[33mfactory:\033[0m deleted '$b' branch"
@@ -1491,8 +1454,8 @@ if [[ "${1:-}" == "destroy" ]]; then
   exit 0
 fi
 
-cd "$WORKTREE"
-FACTORY_BRANCH="$BRANCH" exec python3 "$PY_NAME"
+cd "$FACTORY_DIR"
+exec python3 "$PY_NAME"
 LAUNCH
 chmod +x "$LAUNCHER"
 
@@ -1501,9 +1464,9 @@ if ! grep -qxF "/factory" "$EXCLUDE_FILE"; then
   printf "\n/factory\n" >> "$EXCLUDE_FILE"
 fi
 
-echo -e "\033[33mfactory:\033[0m worktree at .git-factory/worktree"
+echo -e "\033[33mfactory:\033[0m factory at .factory/"
 echo -e "\033[33mfactory:\033[0m run ./factory to start"
 
 # --- run in foreground so user sees output ---
-cd "$WORKTREE"
-FACTORY_BRANCH="$BRANCH" exec python3 "$PY_NAME"
+cd "$FACTORY_DIR"
+exec python3 "$PY_NAME"

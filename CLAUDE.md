@@ -1,6 +1,6 @@
 # git-factory
 
-Autonomous software factory that embeds a Claude Code agent inside a git repo. A developer drops `factory.sh` into any repo, runs it once, and an AI agent bootstraps itself into an isolated git worktree where it continuously analyzes, plans, and improves the codebase.
+Autonomous software factory that embeds a Claude Code agent inside a git repo. A developer drops `factory.sh` into any repo, runs it once, and an AI agent bootstraps itself into a standalone `.factory/` directory where it continuously analyzes, plans, and improves the codebase.
 
 ## Quick reference
 
@@ -16,10 +16,11 @@ bash factory.sh dev reset    # tear down only
 
 Everything lives in a single file: `factory.sh` (bash installer + embedded Python runner). No external dependencies beyond `claude` (or `claude-code`), `git`, `python3`, and `bash`.
 
-- `factory.sh` creates a `factory` branch and a git worktree at `.git-factory/worktree/`
-- The embedded Python runner (`factory.py`) is extracted into the worktree
-- The agent works on the `factory` branch only — the source working tree is never touched
-- `.git-factory/` is locally ignored via `.git/info/exclude` (never pollutes tracked files)
+- `factory.sh` creates `.factory/` as a standalone git repo (via `git init`)
+- The embedded Python runner (`factory.py`) is extracted into `.factory/`
+- Factory metadata (tasks, projects, initiatives) lives in the `.factory/` repo
+- Project worktrees for source code changes are created under `.factory/worktrees/` as git worktrees of the source repo on `factory/*` branches
+- `.factory/` is locally ignored via `.git/info/exclude` (never pollutes tracked files)
 - After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
 
 ### Key paths (at runtime)
@@ -27,21 +28,23 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | Path | What |
 |---|---|
 | `factory.sh` | One-shot installer (replaced by `./factory` after first run) |
-| `.git-factory/worktree/` | Git worktree on the `factory` branch |
-| `.git-factory/worktree/factory.py` | Python orchestrator |
-| `.git-factory/worktree/CLAUDE.md` | Agent's operating instructions (Purpose/Measures/Tests) |
-| `.git-factory/worktree/agents/` | Agent persona definitions (markdown) |
-| `.git-factory/worktree/initiatives/` | High-level goals (YYYY-slug.md) |
-| `.git-factory/worktree/projects/` | Mid-level projects (YYYY-MM-slug.md) |
-| `.git-factory/worktree/tasks/` | Task queue (markdown files with YAML frontmatter) |
-| `.git-factory/worktree/state/` | Runtime state (pid, agent cli path, init timestamp) |
+| `.factory/` | Standalone git repo for factory metadata |
+| `.factory/factory.py` | Python orchestrator |
+| `.factory/CLAUDE.md` | Agent's operating instructions (Purpose/Measures/Tests) |
+| `.factory/agents/` | Agent persona definitions (markdown) |
+| `.factory/initiatives/` | High-level goals (YYYY-slug.md) |
+| `.factory/projects/` | Mid-level projects (YYYY-MM-slug.md) |
+| `.factory/tasks/` | Task queue (markdown files with YAML frontmatter) |
+| `.factory/state/` | Runtime state (pid, agent cli path, init timestamp) |
+| `.factory/logs/` | Agent run logs |
+| `.factory/worktrees/` | Source repo worktrees for project tasks |
 
 ## Code layout
 
 `factory.sh` is structured as:
 
 1. **Bash preamble** — arg parsing, dev mode, dev reset
-2. **Worktree setup** — branch creation, worktree creation, resume logic
+2. **Factory setup** — `git init`, directory creation, resume logic
 3. **Embedded Python** (`cat > ... <<'PY'`) — the full `factory.py` runner:
    - Task parsing (`parse_task`, `load_tasks`)
    - Task metadata updates (`update_task_meta`)
@@ -49,9 +52,9 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
    - Task scheduling (`next_task`)
    - Claude headless runner (`run_claude`) — streams JSON, logs tool calls
    - Main loop (`run`) — picks next task, runs agent, commits results
-4. **CLAUDE.md template** — written into the worktree
+4. **CLAUDE.md template** — written into `.factory/`
 5. **Bootstrap task** — the `define-purpose` task template
-6. **Post-setup** — gitignore copying, hook installation, launcher generation
+6. **Post-setup** — gitignore, hook installation, launcher generation
 
 ## Task system
 
@@ -85,10 +88,10 @@ Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each has YAML f
 bash -n factory.sh                                                  # shell syntax check
 ```
 
-The embedded Python can be validated after extraction into the worktree:
+The embedded Python can be validated after extraction:
 
 ```bash
-python3 -c "import ast; ast.parse(open('.git-factory/worktree/factory.py').read())"
+python3 -c "import ast; ast.parse(open('.factory/factory.py').read())"
 ```
 
 ## Style
