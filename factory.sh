@@ -823,9 +823,6 @@ def run():
     if not cli:
         return
 
-    TASKS_DIR.mkdir(exist_ok=True)
-    STATE_DIR.mkdir(exist_ok=True)
-
     pid_file = STATE_DIR / "factory.pid"
     if pid_file.exists():
         try:
@@ -927,7 +924,7 @@ def run():
             log(f"task failed: {name}")
             return
         if not agent_committed:
-            log(f"agent made no commits")
+            log("agent made no commits")
         passed, details = check_done_details(task["done"], target_dir=work_dir)
         if passed:
             if is_project_task:
