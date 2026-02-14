@@ -90,7 +90,7 @@ cat > "$WORKTREE/$PY_NAME" <<'PY'
 import os, sys, re, signal, time, shutil, subprocess, ast
 from pathlib import Path
 
-signal.signal(signal.SIGINT, signal.SIG_DFL)
+import atexit
 
 ROOT = Path(__file__).resolve().parent
 BRANCH = os.environ.get("FACTORY_BRANCH", "factory/repo")
@@ -106,16 +106,39 @@ def log(msg):
 def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
 
-def require_agent_cli():
+def _cleanup_pid():
+    pid_file = STATE_DIR / "factory.pid"
+    try:
+        pid_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+def _handle_signal(signum, frame):
+    _cleanup_pid()
+    log(f"received signal {signum}, exiting")
+    raise SystemExit(128 + signum)
+
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+signal.signal(signal.SIGTERM, _handle_signal)
+atexit.register(_cleanup_pid)
+
+# --- cached CLI lookup ---
+_cli_cache = None
+
+def get_agent_cli():
+    global _cli_cache
+    if _cli_cache is not None:
+        return _cli_cache
     for cmd in ("codex", "claude", "claude-code"):
         path = shutil.which(cmd)
         if path:
-            return cmd, path
+            _cli_cache = (cmd, path)
+            return _cli_cache
     log("no supported agent CLI found on PATH (tried: claude, claude-code, codex)")
     return None
 
 def init():
-    cli = require_agent_cli()
+    cli = get_agent_cli()
     if not cli:
         return 1
     cli_name, cli_path = cli
@@ -617,7 +640,7 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
 
 
 def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None):
-    cli = require_agent_cli()
+    cli = get_agent_cli()
     if not cli:
         return False, None
     cli_name, cli_path = cli
@@ -718,7 +741,7 @@ def plan_next_task():
 # --- main loop ---
 
 def run():
-    cli = require_agent_cli()
+    cli = get_agent_cli()
     if not cli:
         return
 
