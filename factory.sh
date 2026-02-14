@@ -1,30 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# factory.sh: main entry point for the factory. Sets up environment, checks dependencies,
-# and launches the Python runner that executes tasks.
+# factory.sh: bootstrap installer for the factory.
+# Creates .factory/, extracts the Python runner, and launches it.
+
+# --- constants ---
 NOISES="Clanging Bing-banging Grinding Ka-chunking Ratcheting Hammering Whirring Pressing Stamping Riveting Welding Bolting Torqueing Clatter-clanking Thudding Shearing Punching Forging Sparking Sizzling Honing Milling Buffing Tempering Ka-thunking"
 ROOT="$(git rev-parse --show-toplevel)"
-cd "$ROOT"
-
-# Check dependencies (git, python3)
-for cmd in git python3; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo -e "\033[31mfactory:\033[0m error: '$cmd' is not installed." >&2
-    exit 1
-  fi
-done
-
 FACTORY_DIR="${ROOT}/.factory"
 PROJECT_WORKTREES="${FACTORY_DIR}/worktrees"
 PY_NAME="factory.py"
+EXCLUDE_FILE="$ROOT/.git/info/exclude"
 
-# --- ensure .factory dir is ignored locally ---
-DEV_MODE=false
-if [[ "${1:-}" == "dev" ]]; then
-  DEV_MODE=true
-  shift
+# --- provider detection ---
+PROVIDER=""
+case "${1:-}" in
+  claude|codex) PROVIDER="$1"; shift ;;
+esac
+if [[ -z "$PROVIDER" ]]; then
+  for try in claude claude-code codex; do
+    if command -v "$try" >/dev/null 2>&1; then
+      PROVIDER="$try"
+      break
+    fi
+  done
 fi
+
+# --- check dependencies ---
+[[ -n "$PROVIDER" ]] || { echo -e "\033[31mfactory:\033[0m error: no agent CLI found (tried: claude, claude-code, codex)" >&2; exit 1; }
+for cmd in git python3; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo -e "\033[31mfactory:\033[0m error: '$cmd' is not installed." >&2; exit 1; }
+done
+
+cd "$ROOT"
 
 # --- dev reset: tear down without restoring factory.sh ---
 dev_reset() {
@@ -50,19 +58,20 @@ dev_reset() {
   rm -f "$ROOT/factory"
 }
 
-if [[ "$DEV_MODE" == true ]] && [[ "${1:-}" == "reset" ]]; then
-  dev_reset
-  echo -e "\033[33mfactory:\033[0m reset"
-  exit 0
-fi
+# --- handle commands ---
+DEV_MODE=false
+case "${1:-}" in
+  reset)
+    dev_reset
+    echo -e "\033[33mfactory:\033[0m reset"
+    exit 0
+    ;;
+  dev)
+    DEV_MODE=true
+    [[ -d "$FACTORY_DIR" ]] && dev_reset
+    ;;
+esac
 
-# --- dev mode: always start fresh ---
-if [[ "$DEV_MODE" == true ]] && [[ -d "$FACTORY_DIR" ]]; then
-  echo -e "\033[33mfactory:\033[0m resetting"
-  dev_reset
-fi
-
-EXCLUDE_FILE="$ROOT/.git/info/exclude"
 mkdir -p "$(dirname "$EXCLUDE_FILE")"
 touch "$EXCLUDE_FILE"
 if ! grep -qxF "/.factory/" "$EXCLUDE_FILE"; then
