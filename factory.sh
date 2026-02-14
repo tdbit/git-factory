@@ -405,22 +405,27 @@ def _kill_proc(proc, reason="timeout"):
         proc.wait()
 
 def _open_run_log(task_name=None):
-    """Open a JSONL log file for the current agent run."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = STATE_DIR / "last_run.jsonl"
-    f = open(log_path, "w")
+    f = open(STATE_DIR / "last_run.jsonl", "w")
     if task_name:
         f.write(json.dumps({"type": "_factory", "task": task_name, "time": time.ctime()}) + "\n")
     return f
 
+def _dump_debug(label, stderr_lines, stdout_garbage):
+    if stderr_lines:
+        log(f"--- {label} stderr ---")
+        for line in stderr_lines:
+            print(line)
+        log(f"--- end ---")
+    if stdout_garbage:
+        log(f"--- {label} stdout garbage ---")
+        for line in stdout_garbage:
+            print(line)
+        log(f"--- end ---")
+
 def _build_prompt(prompt, allowed_tools, agent):
-    full_prompt = prompt
-    tools = allowed_tools
-    if agent and agent.get("prompt"):
-        full_prompt = f"{agent['prompt']}\n\n---\n\n{prompt}"
-        if agent.get("tools"):
-            tools = agent["tools"]
-    return full_prompt, tools
+    if not agent or not agent.get("prompt"):
+        return prompt, allowed_tools
+    return f"{agent['prompt']}\n\n---\n\n{prompt}", agent.get("tools") or allowed_tools
 
 def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which("codex")
@@ -569,22 +574,11 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
             continue
 
         log(f"codex failed with exit code {proc.returncode}")
-        if stderr_text:
-            log("--- stderr start ---")
-            print(stderr_text, end="")
-            log("--- stderr end ---")
-        if stdout_garbage:
-            log("--- stdout garbage start ---")
-            for line in stdout_garbage:
-                print(line)
-            log("--- stdout garbage end ---")
+        _dump_debug("codex", [stderr_text] if stderr_text else [], stdout_garbage)
         return False, None
 
     log("codex failed for all configured models")
-    if last_stderr:
-        log("--- stderr start ---")
-        print(last_stderr.decode(errors="replace"), end="")
-        log("--- stderr end ---")
+    _dump_debug("codex", [last_stderr.decode(errors="replace")] if last_stderr else [], [])
     return False, None
 
 
@@ -610,7 +604,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
          "--output-format", "stream-json",
          full_prompt, "--allowedTools", allowed_tools, *model_arg],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, # Capture stderr
+        stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
         start_new_session=True,
         cwd=work_dir,
@@ -622,7 +616,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         for line in iter(proc.stderr.readline, b""):
             line = line.decode().strip()
             if line:
-               stderr_output.append(line)
+                stderr_output.append(line)
 
     stderr_reader = threading.Thread(target=read_stderr, daemon=True)
     stderr_reader.start()
@@ -682,25 +676,16 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     deadline = start + AGENT_TIMEOUT if AGENT_TIMEOUT else None
     try:
         while reader.is_alive() or stderr_reader.is_alive():
-             if deadline and time.monotonic() >= deadline:
-                 _kill_proc(proc, f"exceeded {AGENT_TIMEOUT:.0f}s timeout")
-                 return False, session_id
-             reader.join(timeout=0.5)
-             stderr_reader.join(timeout=0.5)
+            if deadline and time.monotonic() >= deadline:
+                _kill_proc(proc, f"exceeded {AGENT_TIMEOUT:.0f}s timeout")
+                return False, session_id
+            reader.join(timeout=0.5)
+            stderr_reader.join(timeout=0.5)
 
         exit_code = proc.wait()
         if exit_code != 0:
             log(f"claude failed with exit code {exit_code}")
-            if stderr_output:
-                log("--- stderr start ---")
-                for line in stderr_output:
-                    print(line)
-                log("--- stderr end ---")
-            if stdout_garbage:
-                log("--- stdout garbage start ---")
-                for line in stdout_garbage:
-                    print(line)
-                log("--- stdout garbage end ---")
+            _dump_debug("claude", stderr_output, stdout_garbage)
         return exit_code == 0, session_id
     except KeyboardInterrupt:
         proc.kill()
