@@ -12,7 +12,7 @@ PROJECT_WORKTREES="${FACTORY_DIR}/worktrees"
 PY_NAME="factory.py"
 EXCLUDE_FILE="$ROOT/.git/info/exclude"
 
-# --- provider detection ---
+# --- detect provider ---
 PROVIDER=""
 case "${1:-}" in
   claude|codex) PROVIDER="$1"; shift ;;
@@ -26,11 +26,21 @@ if [[ -z "$PROVIDER" ]]; then
   done
 fi
 
+# --- detect default branch ---
+DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')" || true
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  if git show-ref --verify --quiet refs/heads/main; then
+    DEFAULT_BRANCH="main"
+  elif git show-ref --verify --quiet refs/heads/master; then
+    DEFAULT_BRANCH="master"
+  else
+    DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  fi
+fi
+
 # --- check dependencies ---
 [[ -n "$PROVIDER" ]] || { echo -e "\033[31mfactory:\033[0m error: no agent CLI found (tried: claude, claude-code, codex)" >&2; exit 1; }
-for cmd in git python3; do
-  command -v "$cmd" >/dev/null 2>&1 || { echo -e "\033[31mfactory:\033[0m error: '$cmd' is not installed." >&2; exit 1; }
-done
+command -v python3 >/dev/null 2>&1 || { echo -e "\033[31mfactory:\033[0m error: python3 is not installed." >&2; exit 1; }
 
 cd "$ROOT"
 
@@ -85,20 +95,6 @@ fi
 # --- fresh setup: create standalone factory repo ---
 mkdir -p "$FACTORY_DIR"
 git init "$FACTORY_DIR" >/dev/null 2>&1
-
-# --- detect default branch ---
-DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')" || true
-if [[ -z "$DEFAULT_BRANCH" ]]; then
-  # no origin/HEAD — check which branch exists locally
-  if git show-ref --verify --quiet refs/heads/main; then
-    DEFAULT_BRANCH="main"
-  elif git show-ref --verify --quiet refs/heads/master; then
-    DEFAULT_BRANCH="master"
-  else
-    # last resort: current branch
-    DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-  fi
-fi
 
 # --- write python runner into factory dir ---
 for d in tasks hooks state agents initiatives projects logs; do
