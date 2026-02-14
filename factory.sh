@@ -926,16 +926,17 @@ def run():
         if not agent_committed:
             log("agent made no commits")
         passed, details = check_done_details(task["done"], target_dir=work_dir)
+        commit_work_dir = work_dir if is_project_task else None
         if passed:
             if is_project_task:
                 update_task_meta(task, status="completed", project_commit=head_after)
             else:
                 update_task_meta(task, status="completed", commit=head_after)
-            commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=work_dir if is_project_task else None)
+            commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=commit_work_dir)
             log(f"task done: {name}")
         else:
             update_task_meta(task, status="suspended")
-            commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=work_dir if is_project_task else None)
+            commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=commit_work_dir)
             log(f"task did not complete: {name}")
             if details:
                 log("done conditions:")
