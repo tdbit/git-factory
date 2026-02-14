@@ -34,15 +34,13 @@ done
 
 cd "$ROOT"
 
-# --- dev reset: tear down without restoring factory.sh ---
-dev_reset() {
-  # safety check: ensure FACTORY_DIR looks right
+# --- tear down .factory/, worktrees, and factory/* branches ---
+teardown() {
   if [[ -z "$FACTORY_DIR" ]] || [[ "$FACTORY_DIR" != *".factory" ]]; then
-    echo "Error: unsafe FACTORY_DIR: $FACTORY_DIR"
+    echo -e "\033[31mfactory:\033[0m error: unsafe FACTORY_DIR: $FACTORY_DIR" >&2
     exit 1
   fi
 
-  # remove project worktrees under .factory/worktrees/ (source repo worktrees)
   if [[ -d "$FACTORY_DIR/worktrees" ]]; then
     for wt in "$FACTORY_DIR/worktrees"/*/; do
       [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
@@ -51,7 +49,6 @@ dev_reset() {
 
   rm -rf "$FACTORY_DIR"
 
-  # delete factory/* project branches
   git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
     git branch -D "$b" >/dev/null 2>&1 || true
   done
@@ -62,13 +59,13 @@ dev_reset() {
 DEV_MODE=false
 case "${1:-}" in
   reset)
-    dev_reset
+    teardown
     echo -e "\033[33mfactory:\033[0m reset"
     exit 0
     ;;
   dev)
     DEV_MODE=true
-    [[ -d "$FACTORY_DIR" ]] && dev_reset
+    [[ -d "$FACTORY_DIR" ]] && teardown
     ;;
 esac
 
