@@ -16,6 +16,7 @@ REPO="$(basename "$ROOT")"
 BRANCH="factory/$REPO"
 FACTORY_DIR="${ROOT}/.git-factory"
 WORKTREE="${FACTORY_DIR}/worktree"
+PROJECT_WORKTREES="${FACTORY_DIR}/worktrees"
 PY_NAME="factory.py"
 
 # --- ensure .git-factory dir is ignored locally ---
@@ -96,8 +97,12 @@ git worktree add "$WORKTREE" "$BRANCH" >/dev/null 2>&1
 DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")"
 
 # --- write python runner into worktree ---
-mkdir -p "$WORKTREE/tasks" "$WORKTREE/hooks" "$WORKTREE/state" "$WORKTREE/agents" "$WORKTREE/initiatives" "$WORKTREE/projects"
+for d in tasks hooks state agents initiatives projects; do
+  mkdir -p "$WORKTREE/$d"
+done
+mkdir -p "$PROJECT_WORKTREES"
 printf "%s\n" "$DEFAULT_BRANCH" > "$WORKTREE/state/default_branch.txt"
+printf "%s\n" "$PROJECT_WORKTREES" > "$WORKTREE/state/project_worktrees.txt"
 cat > "$WORKTREE/$PY_NAME" <<'PY'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast
@@ -144,8 +149,16 @@ def project_slug(project_path):
 def project_branch_name(project_path):
     return f"factory/{project_slug(project_path)}"
 
+def _get_project_worktrees_dir():
+    p = STATE_DIR / "project_worktrees.txt"
+    if p.exists():
+        val = p.read_text().strip()
+        if val:
+            return Path(val)
+    return ROOT.parent / "worktrees"
+
 def project_worktree_dir(project_path):
-    return ROOT.parent / "worktrees" / project_slug(project_path)
+    return _get_project_worktrees_dir() / project_slug(project_path)
 
 def ensure_project_worktree(project_path):
     """Create project branch (off default branch) and worktree if needed."""
@@ -1059,18 +1072,29 @@ cat > "$WORKTREE/CLAUDE.md" <<CLAUDE
 Automated software factory for \`$REPO\`.
 
 Source repo: \`$ROOT\`
+Factory dir: \`$FACTORY_DIR\`
 Worktree: \`$WORKTREE\`
 Runner: \`factory.py\`
-Tasks: \`tasks/\`
+Initiatives: \`initiatives/\`
 Projects: \`projects/\`
+Tasks: \`tasks/\`
+Agents: \`agents/\`
 State: \`state/\`
 
-You are a coding agent operating inside a git worktree on the \`factory\` branch.
-The source codebase lives at \`$ROOT\` — you can read it but must not write to it directly.
-All your work happens here in the worktree.
+You are a coding agent operating inside \`$FACTORY_DIR\`. You can only make 
+changes to worktrees located in this directory.
 
-**Important**: Never read or traverse into the \`.git-factory/\` directory in the source repo.
-It contains the factory runtime and is not part of the codebase.
+The main factory worktree is \`$WORKTREE\` and the main branch is
+\`$BRANCH\`.  This is where you track your work and the state of tasks,
+projects, and initiatives.
+
+Project-specific tasks for the source repo will have separate worktrees created
+under \`$FACTORY_DIR/worktrees/\` each with its own branch prefixed with \`factory/\`. This
+is where you will do the actual code changes related to the source repo.
+
+Do not modify any files outside of these worktrees.
+
+When you complete tasks, your commits will be merged back to the source repo by the runner.
 
 ## How tasks work
 
@@ -1357,7 +1381,7 @@ agent has no way to evaluate whether a change is worthwhile.
 
 - Confirm `CLAUDE.md` contains `## Purpose`, `## Measures`, and `## Tests`
   sections with Existential, Strategic, and Tactical subsections.
-- Confirm each subsection has the right number of bullets (3-5 existential, 5-10 strategic, 10-20 tactical) → (3-5 existential, 5-8 strategic, 5-10 tactical)
+- Confirm each subsection has the right number of bullets (3-5 existential, 5-8 strategic, 5-10 tactical)
 - Read the sections back and check they are grounded in the actual repo, not
   generic platitudes.
 TASK
