@@ -860,6 +860,73 @@ is your entire instruction for that run. You MUST follow these rules:
 5. **Stop when done.** Do not loop, do not start the next task, do not look
    for more work. Complete your task, commit, and stop.
 
+
+## Work Model
+
+All work is organized in flat folders:
+
+- `initiatives/`
+- `projects/`
+- `tasks/`
+
+There is no folder nesting. Relationships are defined by frontmatter fields.
+
+### Lifecycle (Uniform Everywhere)
+
+All initiatives, projects, and tasks use the same lifecycle states:
+
+- `backlog` — defined but not active
+- `active` — currently in play
+- `suspended` — intentionally paused
+- `completed` — finished successfully
+- `stopped` — ended and will not resume
+
+There is no `failed` state.
+Failure is represented as:
+status: stopped
+stop_reason: failed
+
+### Structural Relationships
+
+- `parent:` links a task → project or project → initiative.
+- `previous:` defines sequential dependency between tasks.
+- No `parent` means the task is a **factory maintenance task**.
+
+### Scarcity Invariants (Must Always Hold)
+
+The system maintains:
+
+- Exactly **1 active initiative**
+- At most **2 active projects**
+- At most **3 active tasks**
+- At most **1 active unparented (factory) task**
+
+If these constraints are violated, fix them before creating new work.
+
+### Read-Set Rule
+
+When planning or selecting work, you may only read items with:
+
+status ∈ {active, backlog, suspended}
+
+You must ignore `completed` and `stopped` items unless explicitly investigating regressions.
+
+Completed work lives in git history. It does not remain active context.
+
+---
+
+## Planning Discipline
+
+Before creating new initiatives, projects, or tasks:
+
+1. Check whether an active item already exists at that level.
+2. Refine or extend existing work before creating parallel work.
+3. Default to `backlog` when creating new items.
+4. Activate exactly one new item per layer when required.
+
+Creation is a last resort.
+Refinement is preferred.
+
 ## Task format
 
 Tasks are markdown files in \`tasks/\` named \`YYYY-MM-DD-slug.md\`. Every task
@@ -917,7 +984,8 @@ Author-set fields:
 
 Runner-managed fields (set automatically, do not write these yourself):
 
-- **status** — lifecycle state: \`active\`, \`completed\`, \`failed\`, \`incomplete\`
+- **status** — lifecycle state: \`backlog\`, \`active\`, \`suspended\`, \`completed\`, \`stopped\`
+- **stop_reason** — required if `status: stopped`
 - **pid** — process ID of the runner
 - **session** — Claude session ID
 - **branch** — git branch the task ran on
@@ -945,23 +1013,21 @@ header.
 
 Your task is to add three sections to this worktree's CLAUDE.md: **Purpose**,
 **Measures**, and **Tests**.
+Each section must include three levels of abstraction: Existential, Strategic, and Tactical.
+	•	Existential — the real-world outcome this software exists to produce. Describe what becomes true for its users or domain when it is succeeding. Keep this concrete and outcome-focused, not about code aesthetics.
+	•	Strategic — the kinds of improvements that compound over time in this repository. These define direction and leverage, not individual fixes.
+	•	Tactical — specific, near-term improvements grounded in observable friction in this codebase. These should reference real files, workflows, or behaviors.
 
-Each section has three levels of abstraction: **Tactical**, **Strategic**,
-and **Existential**.
+All levels must remain software-focused and grounded in what you observe in the repository. Avoid philosophical framing, abstract mission language, or organizational themes.
 
-- **Tactical** — what to improve next in this repository.
-- **Strategic** — what kinds of improvements compound over time.
-- **Existential** — what kind of system this repository should become long-term.
+Keep the sections tight. Do not write essays.
 
-Keep all three levels concrete and software-focused. No philosophical or
-societal framing. Ground everything in what you observe in the actual repo.
+Bullet guidance:
+	•	Existential: 3–5 bullets (clear, durable outcomes).
+	•	Strategic: 5–8 bullets (compounding directions tied to repo structure).
+	•	Tactical: 5–10 bullets (specific, actionable, repo-level improvements).
 
-Bullet counts should expand as you move down the ladder:
-- Existential subsections: 3-5 bullets.
-- Strategic subsections: 5-10 bullets.
-- Tactical subsections: 10-20 bullets.
-
----
+Favor precision over volume. Each bullet should express a distinct idea.
 
 ### Purpose
 
