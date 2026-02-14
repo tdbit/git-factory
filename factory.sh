@@ -488,6 +488,16 @@ def _kill_proc(proc, reason="timeout"):
         proc.kill()
         proc.wait()
 
+def _open_run_log(task_name=None):
+    """Open a JSONL log file for the current agent run."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = STATE_DIR / "last_run.jsonl"
+    f = open(log_path, "w")
+    if task_name:
+        import json as _json
+        f.write(_json.dumps({"type": "_factory", "task": task_name, "time": time.ctime()}) + "\n")
+    return f
+
 def _build_prompt(prompt, allowed_tools, agent):
     full_prompt = prompt
     tools = allowed_tools
@@ -497,7 +507,7 @@ def _build_prompt(prompt, allowed_tools, agent):
             tools = agent["tools"]
     return full_prompt, tools
 
-def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cwd=None):
+def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cwd=None, run_log=None):
     import threading, json as _json
     cli_path = cli_path or shutil.which("codex")
     if not cli_path:
@@ -589,6 +599,9 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
                     text = line.decode(errors="replace").strip()
                     if not text:
                         continue
+                    if run_log:
+                        run_log.write(text + "\n")
+                        run_log.flush()
                     try:
                         ev = _json.loads(text)
                     except ValueError:
@@ -661,7 +674,7 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
     return False, None
 
 
-def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cli_name=None, cwd=None):
+def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cli_name=None, cwd=None, run_log=None):
     import json as _json, threading
     cli_path = cli_path or shutil.which(cli_name or "claude")
     if not cli_path:
@@ -707,6 +720,9 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
             raw = raw.strip()
             if not raw:
                 continue
+            if run_log:
+                run_log.write(raw.decode(errors="replace") + "\n")
+                run_log.flush()
             try:
                 ev = _json.loads(raw)
             except ValueError:
@@ -781,14 +797,14 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
         return False, session_id
 
 
-def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cwd=None):
+def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cwd=None, run_log=None):
     cli = get_agent_cli()
     if not cli:
         return False, None
     cli_name, cli_path = cli
     if cli_name == "codex":
-        return run_codex(prompt, allowed_tools, agent, cli_path, cwd=cwd)
-    return run_claude(prompt, allowed_tools, agent, cli_path, cli_name, cwd=cwd)
+        return run_codex(prompt, allowed_tools, agent, cli_path, cwd=cwd, run_log=run_log)
+    return run_claude(prompt, allowed_tools, agent, cli_path, cli_name, cwd=cwd, run_log=run_log)
 
 # --- task planning ---
 
@@ -866,19 +882,41 @@ Concrete instruction.
 ...
 ```
 
-Commit it.
+Do NOT commit. The runner will commit your work.
 """
 
 def plan_next_task():
     today = time.strftime("%Y-%m-%d")
     prompt = PLAN_PROMPT.replace("{today}", today)
+    # snapshot existing task files before planning
+    before = set(f.name for f in TASKS_DIR.glob("*.md")) if TASKS_DIR.exists() else set()
     log("planning next task")
-    ok, session_id = run_agent(prompt)
-    if ok:
-        log("task planned")
-    else:
+    run_log = _open_run_log("planning")
+    try:
+        ok, session_id = run_agent(prompt, run_log=run_log)
+    finally:
+        run_log.close()
+    if not ok:
         log("planning failed")
-    return ok
+        return False
+    # find new task files and commit with proper message
+    after = set(f.name for f in TASKS_DIR.glob("*.md")) if TASKS_DIR.exists() else set()
+    new_tasks = sorted(after - before)
+    try:
+        sh("git", "add", "-A")
+        if new_tasks:
+            name = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", Path(new_tasks[0]).stem)
+            sh("git", "commit", "-m", f"New Task: {name}")
+            log(f"task planned: {name}")
+        else:
+            # agent may have modified existing files without creating a new task
+            status = sh("git", "status", "--porcelain")
+            if status:
+                sh("git", "commit", "-m", "Planning update")
+            log("task planned")
+    except subprocess.CalledProcessError:
+        log("task planned (nothing to commit)")
+    return True
 
 # --- main loop ---
 
@@ -970,7 +1008,12 @@ def run():
             if agent_def:
                 log(f"using agent: {agent_name}")
 
-        ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir)
+        run_log = _open_run_log(name)
+        try:
+            ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir, run_log=run_log)
+        finally:
+            run_log.close()
+        log(f"run log: {STATE_DIR / 'last_run.jsonl'}")
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
