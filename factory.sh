@@ -319,6 +319,86 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep"):
         log("stopped")
         return False, session_id
 
+# --- task planning ---
+
+PLAN_PROMPT = """\
+You are the factory's planning agent. Your only job right now is to decide
+what the single best next task is and write it as a task file.
+
+## Step 1: Understand where things stand
+
+Read this worktree's `CLAUDE.md` — specifically the Purpose, Measures, and
+Tests sections. These define what "better" means for this repo.
+
+Then review `tasks/` to understand what has already been done (completed
+tasks), what was attempted but didn't finish (incomplete/failed tasks), and
+what patterns have emerged.
+
+Then read the source repo to understand the current state of the actual code.
+Look at the structure, the quality, the gaps. Don't just skim — read enough
+to form a real opinion about what matters most right now.
+
+## Step 2: Decide what to do next
+
+Pick the single highest-leverage improvement. Use these criteria:
+
+1. **Purpose alignment** — Does it directly advance an item in the
+   Operational Purpose? Does it move a needle described in Measures?
+2. **Foundation first** — Prefer work that unblocks or compounds future
+   work. Tests before features. Structure before polish. Contracts before
+   implementations.
+3. **Concreteness** — The task must name specific files, functions, or
+   behaviors. "Improve error handling" is too vague. "Add error context to
+   the parse_task function when YAML frontmatter is malformed" is concrete.
+4. **Right-sized** — A single task should be completable in one agent
+   session. If the improvement is large, find the smallest slice that
+   delivers value on its own.
+5. **No repetition** — Don't redo work that's already been completed.
+   Check completed tasks carefully. Don't create a task that duplicates
+   or overlaps with an existing one.
+6. **Don't plan ahead** — Write exactly one task. Don't create a backlog.
+   The factory will call you again when this task is done.
+
+## Step 3: Write the task file
+
+Create a file in `tasks/` named `{today}-slug.md` where `{today}` is today's
+date (YYYY-MM-DD format) and `slug` is a short kebab-case description.
+
+Follow the task format documented in `CLAUDE.md`. Include:
+
+- **Frontmatter** with `tools` (only the tools the task actually needs).
+- **Prompt body** — Clear, specific instructions. Name files and functions.
+  Describe the desired behavior, not just "fix" or "improve".
+- **`## Done`** — Concrete completion conditions the runner can verify
+  mechanically. Use the condition types from CLAUDE.md. Every task must
+  be verifiable without human judgment.
+- **`## Context`** — Why this task matters. Reference specific items from
+  Purpose, Measures, or Tests. This helps the executing agent understand
+  the "why" and make better judgment calls.
+- **`## Verify`** — How the executing agent should check its own work
+  before committing. Concrete commands, files to inspect, behaviors to
+  confirm.
+
+After writing the task file, `git add` and `git commit` it with the message
+`New Task: <slug>` where `<slug>` is the task name.
+
+Do NOT set a `parent` field unless the task genuinely depends on another
+task that hasn't completed yet.
+
+Write one task, commit it, and stop.
+"""
+
+def plan_next_task():
+    today = time.strftime("%Y-%m-%d")
+    prompt = PLAN_PROMPT.replace("{today}", today)
+    log("planning next task")
+    ok, session_id = run_claude(prompt)
+    if ok:
+        log("task planned")
+    else:
+        log("planning failed")
+    return ok
+
 # --- main loop ---
 
 def run():
@@ -338,9 +418,9 @@ def run():
     while True:
         task = next_task()
         if task is None:
-            log("idle — waiting for tasks")
-            while next_task() is None:
-                time.sleep(5)
+            if not plan_next_task():
+                log("stopping — planning failed")
+                return
             continue
         name = task["name"]
         log(f"task: {name}")
@@ -588,11 +668,6 @@ the operational purpose and measures directly. Examples:
 - Does the error output tell the user what went wrong and what to do?
 
 After writing these sections, add them to this worktree's CLAUDE.md.
-
-Once that's done you should have a clear understanding of the repo's purpose and
-must now write the best next task for improving the repo based on that purpose.
-DO NOT USE THIS TASK AS THE PARENT OF YOUR NEXT TASK. This task is just to get
-the purpose defined and should not be a dependency for future work.
 
 ## Done
 
