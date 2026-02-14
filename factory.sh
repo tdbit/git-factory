@@ -93,7 +93,20 @@ from pathlib import Path
 import atexit
 
 ROOT = Path(__file__).resolve().parent
-BRANCH = os.environ.get("FACTORY_BRANCH", "factory/repo")
+def _detect_branch():
+    env = os.environ.get("FACTORY_BRANCH", "").strip()
+    if env:
+        return env
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return "factory/repo"
+
+BRANCH = _detect_branch()
 TASKS_DIR = ROOT / "tasks"
 AGENTS_DIR = ROOT / "agents"
 INITIATIVES_DIR = ROOT / "initiatives"
@@ -768,7 +781,17 @@ def run():
 
     TASKS_DIR.mkdir(exist_ok=True)
     STATE_DIR.mkdir(exist_ok=True)
-    (STATE_DIR / "factory.pid").write_text(str(os.getpid()) + "\n")
+
+    pid_file = STATE_DIR / "factory.pid"
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)  # check if process is alive
+            log(f"another instance is running (pid {old_pid})")
+            return
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # stale pid file, safe to overwrite
+    pid_file.write_text(str(os.getpid()) + "\n")
 
     def commit_task(task, message):
         rel = task["_path"].relative_to(ROOT)
@@ -1175,7 +1198,7 @@ TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\
 (
   cd "$WORKTREE"
   git add -f .gitignore CLAUDE.md FACTORY.md "$PY_NAME" factory.sh hooks/
-  git commit -m "Bootstrap" >/dev/null 2>&1 || true
+  git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
   git add -f tasks/
   git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
 )
