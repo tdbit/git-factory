@@ -42,8 +42,6 @@ fi
 [[ -n "$PROVIDER" ]] || { echo -e "\033[31mfactory:\033[0m error: no agent CLI found (tried: claude, claude-code, codex)" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo -e "\033[31mfactory:\033[0m error: python3 is not installed." >&2; exit 1; }
 
-cd "$ROOT"
-
 # --- tear down .factory/, worktrees, and factory/* branches ---
 teardown() {
   if [[ -z "$FACTORY_DIR" ]] || [[ "$FACTORY_DIR" != *".factory" ]]; then
@@ -79,9 +77,9 @@ case "${1:-}" in
     ;;
 esac
 
+# --- ensure .factory/ is locally ignored ---
 mkdir -p "$(dirname "$EXCLUDE_FILE")"
-touch "$EXCLUDE_FILE"
-if ! grep -qxF "/.factory/" "$EXCLUDE_FILE"; then
+if ! grep -qxF "/.factory/" "$EXCLUDE_FILE" 2>/dev/null; then
   printf "\n/.factory/\n" >> "$EXCLUDE_FILE"
 fi
 
