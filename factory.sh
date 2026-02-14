@@ -202,32 +202,19 @@ def ensure_project_worktree(project_path):
 
 def build_epilogue(task, project_dir):
     """Build epilogue instruction appended to project task prompts."""
-    task_path = task["_path"]
     return f"""
 
 ---
 
-## Epilogue (runner instructions — follow these exactly)
+## Epilogue
 
 You are working in a project worktree at `{project_dir}`.
-Your code changes go here. The factory orchestration lives in a separate worktree.
+Your code changes go here.
 
 When you are done:
 1. Stage and commit your code changes in this worktree (the current directory).
    Use a short, descriptive commit message.
-2. Get the final commit hash: `git rev-parse HEAD`
-3. Update the task file at `{task_path}` — add `project_commit: <hash>` to the
-   frontmatter (after the last existing field, before the closing `---`).
-   Use: `python3 -c "
-p = __import__('pathlib').Path('{task_path}')
-t = p.read_text()
-_, fm, body = t.split('---', 2)
-fm = fm.rstrip() + '\\nproject_commit: <HASH>\\n'
-p.write_text('---' + fm + '---' + body)
-"` (replace <HASH> with the actual hash)
-4. Commit that metadata change in the factory worktree:
-   `git -C {ROOT} add {task_path.relative_to(ROOT)} && git -C {ROOT} commit -m "Record project commit for {task['name']}"`
-5. Stop.
+2. Stop. The runner will handle bookkeeping.
 """
 
 def log(msg):
@@ -549,7 +536,7 @@ def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None
     for model_name in model_candidates:
         log(f"agent provider: codex, model: {model_name}")
         proc = subprocess.Popen(
-            [cli_path, "exec", "--model", model_name, "--json", full_prompt],
+            [cli_path, "exec", "--model", model_name, "--sandbox", "workspace-write", "--json", full_prompt],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
@@ -1021,6 +1008,11 @@ def run():
             if agent_def:
                 log(f"using agent: {agent_name}")
 
+        # snapshot HEAD before agent runs
+        head_before = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=work_dir, stderr=subprocess.STDOUT
+        ).decode().strip()
+
         run_log = _open_run_log(name)
         try:
             ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir, run_log=run_log)
@@ -1029,21 +1021,26 @@ def run():
         log(f"run log: {STATE_DIR / 'last_run.jsonl'}")
         if session_id:
             update_task_meta(task, session=session_id)
+
+        # check if agent made any commits
+        head_after = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=work_dir, stderr=subprocess.STDOUT
+        ).decode().strip()
+        agent_committed = head_before != head_after
+
         if not ok:
             update_task_meta(task, status="stopped", stop_reason="failed")
             commit_task(task, f"Failed Task: {name}", reset=True, work_dir=work_dir if is_project_task else None)
             log(f"task failed: {name}")
             return
+        if not agent_committed:
+            log(f"agent made no commits")
         passed, details = check_done_details(task["done"], target_dir=work_dir)
         if passed:
             if is_project_task:
-                # capture commit from project worktree
-                commit = subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"], cwd=work_dir, stderr=subprocess.STDOUT
-                ).decode().strip()
+                update_task_meta(task, status="completed", project_commit=head_after)
             else:
-                commit = sh("git", "rev-parse", "HEAD")
-            update_task_meta(task, status="completed", commit=commit)
+                update_task_meta(task, status="completed", commit=head_after)
             commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=work_dir if is_project_task else None)
             log(f"task done: {name}")
         else:
