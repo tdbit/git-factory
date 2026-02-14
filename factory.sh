@@ -113,19 +113,53 @@ def init():
 def parse_task(path):
     text = path.read_text()
     if not text.startswith("---"):
+        log(f"skipping {path.name}: no frontmatter")
         return None
-    _, fm, body = text.split("---", 2)
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        log(f"skipping {path.name}: malformed frontmatter")
+        return None
+    _, fm, body = parts
     meta = {}
     for line in fm.strip().splitlines():
         key, _, val = line.partition(":")
-        meta[key.strip()] = val.strip()
+        if key.strip():
+            meta[key.strip()] = val.strip()
+    # parse sections from body
+    sections = {}
+    current_section = None
+    current_lines = []
+    prompt_lines = []
+    for line in body.split("\n"):
+        m = re.match(r'^##\s+(.+)$', line)
+        if m:
+            if current_section:
+                sections[current_section] = "\n".join(current_lines).strip()
+            current_section = m.group(1).strip().lower()
+            current_lines = []
+        elif current_section:
+            current_lines.append(line)
+        else:
+            prompt_lines.append(line)
+    if current_section:
+        sections[current_section] = "\n".join(current_lines).strip()
+    # extract done conditions from ## Done section
+    done_lines = []
+    if "done" in sections:
+        for line in sections["done"].splitlines():
+            line = line.strip().lstrip("- ")
+            if line and re.match(r'`?(\w+)\(', line):
+                done_lines.append(line.strip('`'))
+            elif line == "always" or line == "`always`":
+                done_lines.append("always")
     name = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", path.stem)
     return {
         "name": name,
         "tools": meta.get("tools", "Read,Write,Edit,Bash,Glob,Grep"),
-        "done": meta.get("done", ""),
+        "done": done_lines,
         "parent": meta.get("parent", ""),
-        "prompt": body.strip(),
+        "prompt": "\n".join(prompt_lines).strip(),
+        "sections": sections,
         "_path": path,
     }
 
@@ -156,14 +190,14 @@ def update_task_meta(task, **kwargs):
 
 # --- completion checks ---
 
-def check_done(done):
-    if not done:
+def check_one_condition(cond):
+    if not cond:
         return False
-    if done == "always":
+    if cond == "always":
         return False
-    m = re.match(r'(\w+)\((.+)\)$', done)
+    m = re.match(r'(\w+)\((.+)\)$', cond)
     if not m:
-        log(f"unknown done: {done}")
+        log(f"unknown condition: {cond}")
         return False
     func, raw_args = m.group(1), m.group(2)
     args = re.findall(r'"([^"]*)"', raw_args)
@@ -191,6 +225,12 @@ def check_done(done):
             return False
     log(f"unknown check: {func}")
     return False
+
+def check_done(done):
+    """Check a list of done conditions. All must pass."""
+    if not done:
+        return False
+    return all(check_one_condition(c) for c in done)
 
 def next_task():
     tasks = load_tasks()
@@ -305,24 +345,29 @@ def run():
         name = task["name"]
         log(f"task: {name}")
         branch = sh("git", "rev-parse", "--abbrev-ref", "HEAD")
-        update_task_meta(task, pid=str(os.getpid()), branch=branch)
+        update_task_meta(task, status="active", pid=str(os.getpid()), branch=branch)
         commit_task(task, f"Start Task: {name}")
-        ok, session_id = run_claude(task["prompt"], allowed_tools=task["tools"])
+        # build prompt: instruction body + context + verify (exclude done)
+        prompt_parts = [task["prompt"]]
+        for section in ("context", "verify"):
+            if section in task["sections"]:
+                prompt_parts.append(f"## {section.title()}\n\n{task['sections'][section]}")
+        prompt = "\n\n".join(prompt_parts)
+        ok, session_id = run_claude(prompt, allowed_tools=task["tools"])
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
+            update_task_meta(task, status="failed")
             commit_task(task, f"Failed Task: {name}")
             log(f"task failed: {name}")
             return
         if check_done(task["done"]):
-            try:
-                commit = sh("git", "rev-parse", "HEAD")
-                update_task_meta(task, commit=commit)
-            except Exception:
-                pass
+            commit = sh("git", "rev-parse", "HEAD")
+            update_task_meta(task, status="completed", commit=commit)
             commit_task(task, f"Complete Task: {name}")
             log(f"task done: {name}")
         else:
+            update_task_meta(task, status="incomplete")
             commit_task(task, f"Incomplete Task: {name}")
             log(f"task did not complete: {name}")
             return
@@ -362,21 +407,78 @@ is your entire instruction for that run. You MUST follow these rules:
 2. **Commit your work.** When you are done, \`git add\` and \`git commit\` the
    files you changed. Use a short, descriptive commit message that summarizes
    what you did — not the task name, not a prefix, just what changed.
-3. **Creating tasks.** Tasks are markdown files in \`tasks/\` with YAML
-   frontmatter. If your task creates follow-up tasks, you MUST set the
-   \`parent\` field to the filename of the current task so the runner knows
-   the dependency order. Use the naming convention \`YYYY-MM-DD-slug.md\`.
-4. **Do not modify this file beyond what a task asks.** If a task tells you to
+3. **Do not modify this file beyond what a task asks.** If a task tells you to
    add sections to \`CLAUDE.md\`, do that. Otherwise leave it alone.
-5. **Stop when done.** Do not loop, do not start the next task, do not look
+4. **Stop when done.** Do not loop, do not start the next task, do not look
    for more work. Complete your task, commit, and stop.
+
+## Task format
+
+Tasks are markdown files in \`tasks/\` named \`YYYY-MM-DD-slug.md\`. Every task
+has YAML frontmatter for runner metadata, then a fixed set of markdown sections.
+
+\`\`\`markdown
+---
+tools: Read,Write,Edit,Bash
+parent: YYYY-MM-DD-other-task.md
+---
+
+What to do. This is the prompt — the agent's instruction for this run.
+Be specific and concrete. Name files, functions, and behaviors.
+
+## Done
+
+Completion conditions checked by the runner after the agent finishes.
+One condition per line. All must pass. Supported conditions:
+
+- \\\`section_exists("text")\\\` — text appears in CLAUDE.md
+- \\\`file_exists("path")\\\` — file exists in the worktree
+- \\\`file_absent("path")\\\` — file does not exist
+- \\\`file_contains("path", "text")\\\` — file contains text
+- \\\`file_missing_text("path", "text")\\\` — file missing or lacks text
+- \\\`command("cmd")\\\` — shell command exits 0
+- \\\`always\\\` — task never completes (recurring)
+
+## Context
+
+Why this task exists. What purpose or measure it serves. Link to specific
+items in the Purpose, Measures, or Tests sections of CLAUDE.md so the
+agent understands how this work connects to the repo's goals.
+
+## Verify
+
+How the agent should check its own work before committing. Concrete
+commands to run, files to inspect, behaviors to confirm. The agent
+should do these checks — they are instructions, not just documentation.
+\`\`\`
+
+### Frontmatter fields
+
+Author-set fields:
+
+- **tools** — which Claude Code tools the agent can use (default:
+  \`Read,Write,Edit,Bash,Glob,Grep\`)
+- **parent** — filename of a task that must complete first (dependency)
+
+Runner-managed fields (set automatically, do not write these yourself):
+
+- **status** — lifecycle state: \`active\`, \`completed\`, \`failed\`, \`incomplete\`
+- **pid** — process ID of the runner
+- **session** — Claude session ID
+- **branch** — git branch the task ran on
+- **commit** — HEAD commit hash when the task completed
+
+### Creating follow-up tasks
+
+If your task creates follow-up tasks, set the \`parent\` field in the new
+task's frontmatter to the filename of the current task so the runner
+knows the dependency order.
 CLAUDE
 
 # --- write bootstrap task ---
 cat > "$WORKTREE/tasks/$(date +%Y-%m-%d)-define-purpose.md" <<'TASK'
 ---
 tools: Read,Write,Edit,Bash
-done: section_exists("## Purpose")
 ---
 
 Read `CLAUDE.md` in this directory, then read the source repo's `CLAUDE.md`
@@ -403,7 +505,7 @@ Bullet counts should expand as you move down the ladder:
 
 ---
 
-## Purpose
+### Purpose
 
 The Purpose section defines what "better" means for this codebase.
 
@@ -428,7 +530,7 @@ messages, clarify public APIs, reduce steps to run locally.
 
 ---
 
-## Measures
+### Measures
 
 The Measures section defines signals of progress. Every measure must include
 how it is observed — a command, a metric, or a concrete thing you can point at.
@@ -455,7 +557,7 @@ under N ms.
 
 ---
 
-## Tests
+### Tests
 
 The Tests section contains "purpose gate" questions. Ask yourself these
 questions every time you make a change.
@@ -489,9 +591,27 @@ After writing these sections, add them to this worktree's CLAUDE.md.
 
 Once that's done you should have a clear understanding of the repo's purpose and
 must now write the best next task for improving the repo based on that purpose.
-DO NOT USE THIS TASK THE PARENT OF YOUR NEXT TASK. This task is just to get the
-purpose defined and should not be a dependency for future work.
+DO NOT USE THIS TASK AS THE PARENT OF YOUR NEXT TASK. This task is just to get
+the purpose defined and should not be a dependency for future work.
 
+## Done
+
+- `section_exists("## Purpose")`
+
+## Context
+
+This is the bootstrap task. It creates the Purpose, Measures, and Tests
+sections that guide all future factory work. Without these sections, the
+agent has no way to evaluate whether a change is worthwhile.
+
+## Verify
+
+- Confirm `CLAUDE.md` contains `## Purpose`, `## Measures`, and `## Tests`
+  sections with Existential, Strategic, and Operational subsections.
+- Confirm each subsection has the right number of bullets (3-5 existential,
+  5-10 strategic, 10-20 operational).
+- Read the sections back and check they are grounded in the actual repo, not
+  generic platitudes.
 TASK
 
 # --- copy .gitignore from source repo ---

@@ -44,23 +44,51 @@ your-repo/
 
 ## Task system
 
-Tasks are markdown files in `tasks/` with YAML frontmatter:
+Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each task has minimal YAML frontmatter for runner metadata, then a fixed set of markdown sections:
 
 ```markdown
 ---
 tools: Read,Write,Edit,Bash
-done: section_exists("## Purpose")
-parent: optional-dependency.md
+parent: YYYY-MM-DD-other-task.md
 ---
 
-The prompt for the agent goes here.
+The prompt — what the agent should do. Be specific and concrete.
+
+## Done
+
+Completion conditions checked by the runner after the agent finishes.
+One per line, all must pass.
+
+- `section_exists("## Purpose")`
+- `file_exists("src/config.py")`
+
+## Context
+
+Why this task exists and what purpose it serves.
+
+## Verify
+
+How the agent should check its own work before committing.
 ```
 
-- **tools** — which Claude Code tools the agent can use for this task
-- **done** — completion condition checked after the agent finishes
+### Frontmatter fields
+
+Author-set:
+
+- **tools** — which Claude Code tools the agent can use (default: `Read,Write,Edit,Bash,Glob,Grep`)
 - **parent** — another task file that must complete first (dependency chain)
 
+Runner-managed (set automatically):
+
+- **status** — lifecycle state: `active`, `completed`, `failed`, `incomplete`
+- **pid** — process ID of the runner
+- **session** — Claude session ID
+- **branch** — git branch the task ran on
+- **commit** — HEAD commit hash when the task completed
+
 ### Completion conditions
+
+Listed in the `## Done` section, one per line. All must pass.
 
 | Condition | Passes when |
 |---|---|
@@ -71,7 +99,11 @@ The prompt for the agent goes here.
 | `file_contains("path", "text")` | file exists and contains text |
 | `file_missing_text("path", "text")` | file missing or doesn't contain text |
 | `command("cmd")` | shell command exits 0 |
-| `always` | never completes (continuous/recurring task) |
+| `always` | never completes (recurring task) |
+
+### Runtime state
+
+The runner writes `status`, `pid`, `session`, and `branch` into the YAML frontmatter as it executes. These fields are managed by the runner — never write them manually.
 
 ## Usage
 
