@@ -373,7 +373,7 @@ is your entire instruction for that run. You MUST follow these rules:
 CLAUDE
 
 # --- write bootstrap task ---
-cat > "$WORKTREE/tasks/$(date +%Y-%m-%d)-describe-source-repo-purpose-and-goals.md" <<'TASK'
+cat > "$WORKTREE/tasks/$(date +%Y-%m-%d)-define-purpose.md" <<'TASK'
 ---
 tools: Read,Write,Edit,Bash
 done: section_exists("## Purpose")
@@ -489,6 +489,8 @@ After writing these sections, add them to this worktree's CLAUDE.md.
 
 Once that's done you should have a clear understanding of the repo's purpose and
 must now write the best next task for improving the repo based on that purpose.
+DO NOT USE THIS TASK THE PARENT OF YOUR NEXT TASK. This task is just to get the
+purpose defined and should not be a dependency for future work.
 
 TASK
 
