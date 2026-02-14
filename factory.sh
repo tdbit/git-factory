@@ -1450,7 +1450,6 @@ GI
 }
 
 # --- handle commands ---
-DEV_MODE=false
 case "${1:-}" in
   reset)
     teardown
@@ -1458,28 +1457,25 @@ case "${1:-}" in
     exit 0
     ;;
   dev)
-    DEV_MODE=true
     [[ -d "$FACTORY_DIR" ]] && teardown
+    ensure_excluded
+    bootstrap
+    echo -e "\033[33mfactory:\033[0m dev mode — factory at .factory/"
+    cd "$FACTORY_DIR"
+    exec python3 "$PY_NAME"
+    ;;
+  *)
+    ensure_excluded
+    # resume if already bootstrapped
+    if [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
+      echo -e "\033[33mfactory:\033[0m resuming"
+      cd "$FACTORY_DIR"
+      exec python3 "$PY_NAME"
+    fi
+    bootstrap
+    write_launcher
+    echo -e "\033[33mfactory:\033[0m run ./factory to start"
+    cd "$FACTORY_DIR"
+    exec python3 "$PY_NAME"
     ;;
 esac
-
-ensure_excluded
-
-# resume if already bootstrapped
-if [[ "$DEV_MODE" == false ]] && [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
-  echo -e "\033[33mfactory:\033[0m resuming"
-  cd "$FACTORY_DIR"
-  exec python3 "$PY_NAME"
-fi
-
-bootstrap
-
-if [[ "$DEV_MODE" == false ]]; then
-  write_launcher
-  echo -e "\033[33mfactory:\033[0m run ./factory to start"
-else
-  echo -e "\033[33mfactory:\033[0m dev mode — factory at .factory/"
-fi
-
-cd "$FACTORY_DIR"
-exec python3 "$PY_NAME"
