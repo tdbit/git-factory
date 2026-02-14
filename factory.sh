@@ -202,17 +202,6 @@ def get_agent_cli():
     log("no agent CLI found (check config.json)")
     return None
 
-def init():
-    cli = get_agent_cli()
-    if not cli:
-        return 1
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    AGENTS_DIR.mkdir(exist_ok=True)
-    INITIATIVES_DIR.mkdir(exist_ok=True)
-    PROJECTS_DIR.mkdir(exist_ok=True)
-    (STATE_DIR / "initialized.txt").write_text(time.ctime() + "\n")
-    return 0
-
 # --- helpers ---
 
 def load_agent(name):
@@ -878,25 +867,14 @@ def run():
             pass  # stale pid file, safe to overwrite
     pid_file.write_text(str(os.getpid()) + "\n")
 
-    def commit_task(task, message, scoop=False, reset=False, work_dir=None):
+    def commit_task(task, message, scoop=False, work_dir=None):
         """Commit task metadata on the factory branch.
 
         scoop=True:  best-effort stage any uncommitted agent work.
-        reset=True:  discard uncommitted changes (for crashed agents).
-        work_dir:    project worktree (if set, scoop/reset target the project
-                     worktree instead of factory; only the task file is committed
-                     on the factory branch).
+        work_dir:    project worktree (if set, only the task file is committed
+                     on the factory branch, not the project worktree).
         """
-        is_project = work_dir is not None and work_dir != ROOT
-        if reset:
-            target = work_dir or ROOT
-            try:
-                subprocess.check_output(["git", "checkout", "--", "."], cwd=target, stderr=subprocess.STDOUT)
-                subprocess.check_output(["git", "clean", "-fd"], cwd=target, stderr=subprocess.STDOUT)
-            except Exception:
-                pass
-        elif scoop and not is_project:
-            # only scoop in factory worktree for non-project tasks
+        if scoop and (work_dir is None or work_dir == ROOT):
             try:
                 status = sh("git", "status", "--porcelain")
                 if status:
@@ -967,8 +945,15 @@ def run():
         agent_committed = head_before != head_after
 
         if not ok:
+            # reset work dir first, then update meta (so reset doesn't wipe the meta change)
+            if is_project_task:
+                try:
+                    subprocess.check_output(["git", "checkout", "--", "."], cwd=work_dir, stderr=subprocess.STDOUT)
+                    subprocess.check_output(["git", "clean", "-fd"], cwd=work_dir, stderr=subprocess.STDOUT)
+                except Exception:
+                    pass
             update_task_meta(task, status="stopped", stop_reason="failed")
-            commit_task(task, f"Failed Task: {name}", reset=True, work_dir=work_dir if is_project_task else None)
+            commit_task(task, f"Failed Task: {name}")
             log(f"task failed: {name}")
             return
         if not agent_committed:
@@ -994,8 +979,6 @@ def run():
             return
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "init":
-        raise SystemExit(init())
     run()
 PY
 chmod +x "$FACTORY_DIR/$PY_NAME"
@@ -1441,12 +1424,6 @@ GI
     git commit -m "New Task: $TASK_NAME" >/dev/null 2>&1 || true
   )
 
-  # init
-  (cd "$FACTORY_DIR" && python3 "$PY_NAME" init) || {
-    echo -e "\033[33mfactory:\033[0m init failed — aborting"
-    rm -rf "$FACTORY_DIR"
-    exit 1
-  }
 }
 
 # --- handle commands ---
