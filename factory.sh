@@ -796,7 +796,25 @@ def run():
             pass  # stale pid file, safe to overwrite
     pid_file.write_text(str(os.getpid()) + "\n")
 
-    def commit_task(task, message):
+    def commit_task(task, message, scoop=False, reset=False):
+        """Commit task metadata.
+
+        scoop=True:  best-effort stage any uncommitted agent work.
+        reset=True:  discard uncommitted changes (for crashed agents).
+        """
+        if reset:
+            try:
+                sh("git", "checkout", "--", ".")
+                sh("git", "clean", "-fd")
+            except Exception:
+                pass
+        elif scoop:
+            try:
+                status = sh("git", "status", "--porcelain")
+                if status:
+                    sh("git", "add", "-A")
+            except Exception:
+                pass
         rel = task["_path"].relative_to(ROOT)
         sh("git", "add", str(rel))
         sh("git", "commit", "-m", message)
@@ -834,18 +852,18 @@ def run():
             update_task_meta(task, session=session_id)
         if not ok:
             update_task_meta(task, status="stopped", stop_reason="failed")
-            commit_task(task, f"Failed Task: {name}")
+            commit_task(task, f"Failed Task: {name}", reset=True)
             log(f"task failed: {name}")
             return
         passed, details = check_done_details(task["done"])
         if passed:
             commit = sh("git", "rev-parse", "HEAD")
             update_task_meta(task, status="completed", commit=commit)
-            commit_task(task, f"Complete Task: {name}")
+            commit_task(task, f"Complete Task: {name}", scoop=True)
             log(f"task done: {name}")
         else:
             update_task_meta(task, status="suspended")
-            commit_task(task, f"Incomplete Task: {name}")
+            commit_task(task, f"Incomplete Task: {name}", scoop=True)
             log(f"task did not complete: {name}")
             if details:
                 log("done conditions:")
