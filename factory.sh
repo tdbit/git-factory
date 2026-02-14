@@ -309,9 +309,19 @@ def check_one_condition(cond):
         text = (ROOT / "CLAUDE.md").read_text() if (ROOT / "CLAUDE.md").exists() else ""
         return args[0] not in text
     elif func == "file_exists":
-        return (ROOT / args[0]).exists()
+        pat = args[0]
+        glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
+        has_wild = any(ch in glob_pat for ch in "*?[]")
+        if has_wild or "YYYY" in pat:
+            return any(ROOT.glob(glob_pat))
+        return (ROOT / pat).exists()
     elif func == "file_absent":
-        return not (ROOT / args[0]).exists()
+        pat = args[0]
+        glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
+        has_wild = any(ch in glob_pat for ch in "*?[]")
+        if has_wild or "YYYY" in pat:
+            return not any(ROOT.glob(glob_pat))
+        return not (ROOT / pat).exists()
     elif func == "file_contains":
         p = ROOT / args[0]
         return p.exists() and args[1] in p.read_text()
@@ -333,6 +343,19 @@ def check_done(done):
         return False
     return all(check_one_condition(c) for c in done)
 
+def check_done_details(done):
+    """Return (all_passed, [(cond, passed), ...])."""
+    results = []
+    if not done:
+        return False, results
+    all_passed = True
+    for cond in done:
+        ok = check_one_condition(cond)
+        results.append((cond, ok))
+        if not ok:
+            all_passed = False
+    return all_passed, results
+
 def next_task():
     tasks = load_tasks()
     done_map = {t["_path"].name: check_done(t["done"]) for t in tasks}
@@ -347,47 +370,195 @@ def next_task():
 
 # --- agent runner ---
 
-
-def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None):
-    import json as _json, threading
-    cli = require_agent_cli()
-    if not cli:
-        return False, None
-    cli_name, cli_path = cli
-    
-    # If agent is provided, inject its prompt
+def _build_prompt(prompt, allowed_tools, agent):
     full_prompt = prompt
+    tools = allowed_tools
     if agent and agent.get("prompt"):
         full_prompt = f"{agent['prompt']}\n\n---\n\n{prompt}"
         if agent.get("tools"):
-             allowed_tools = agent["tools"]
+            tools = agent["tools"]
+    return full_prompt, tools
 
-    # codex CLI path: run in non-interactive exec mode
-    if cli_name == "codex":
+def run_codex(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None):
+    import threading, json as _json
+    cli_path = cli_path or shutil.which("codex")
+    if not cli_path:
+        log("codex CLI not found on PATH")
+        return False, None
+
+    full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
+
+    requested_model = os.environ.get("FACTORY_CODEX_MODEL", "").strip()
+    fallback_models = [
+        m.strip() for m in os.environ.get("FACTORY_CODEX_MODEL_FALLBACKS", "gpt-5-codex,o3").split(",")
+        if m.strip()
+    ]
+    model_candidates = []
+    if requested_model:
+        model_candidates.append(requested_model)
+    else:
+        model_candidates.append("gpt-5.2-codex")
+    for m in fallback_models:
+        if m not in model_candidates:
+            model_candidates.append(m)
+
+    last_stderr = b""
+    heartbeat_sec = float(os.environ.get("FACTORY_HEARTBEAT_SEC", "15"))
+    for model_name in model_candidates:
+        log(f"agent provider: codex, model: {model_name}")
         proc = subprocess.Popen(
-            [cli_path, "exec", full_prompt],
+            [cli_path, "exec", "--model", model_name, "--json", full_prompt],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             cwd=ROOT,
         )
-        stdout, stderr = proc.communicate()
-        if stdout:
-            print(stdout.decode(errors="replace"), end="")
-        if proc.returncode != 0:
-            log(f"codex failed with exit code {proc.returncode}")
-            if stderr:
-                log("--- stderr start ---")
-                print(stderr.decode(errors="replace"), end="")
-                log("--- stderr end ---")
-        return proc.returncode == 0, None
+        start = time.monotonic()
+        last_output = [start]
+        stderr_lines = []
 
-    # claude/claude-code path: structured stream-json mode
+        stdout_garbage = []
+        progress_len = 0
+        prefix = "\033[33mfactory:\033[0m "
+
+        def _handle_event(ev):
+            nonlocal progress_len
+            etype = ev.get("type")
+            item = ev.get("item") or {}
+            # shorten long commands to first line
+            cmd_val = item.get("command") or ""
+            if cmd_val:
+                first = cmd_val.splitlines()[0]
+                if cmd_val != first:
+                    item["command"] = first + " …"
+            if etype == "message":
+                msg = ev.get("content") or ev.get("text") or ""
+                if msg:
+                    print(msg, end="")
+                return
+            if etype == "item.started":
+                cmd = item.get("command") or ""
+                if cmd:
+                    line = f"{prefix}\033[36m→ Run\033[0m \033[2m{cmd}\033[0m"
+                    progress_len = len(line)
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                return
+            if etype == "item.completed":
+                cmd = item.get("command") or ""
+                out = item.get("aggregated_output") or ""
+                exit_code = item.get("exit_code")
+                if cmd:
+                    status_prefix = "\033[36m✓ Run\033[0m" if exit_code == 0 else "\033[31m✗ Run\033[0m"
+                    suffix = "" if exit_code == 0 else f" (exit {exit_code})"
+                    line = f"{prefix}{status_prefix} \033[2m{cmd}\033[0m{suffix}"
+                    pad = max(0, progress_len - len(line))
+                    sys.stdout.write("\r" + line + (" " * pad) + "\n")
+                    sys.stdout.flush()
+                    progress_len = 0
+                if out and exit_code != 0:
+                    print(out, end="" if out.endswith("\n") else "\n")
+                return
+            if "content" in ev and isinstance(ev["content"], str):
+                print(ev["content"], end="")
+
+        def _read_stdout():
+            for line in iter(proc.stdout.readline, b""):
+                last_output[0] = time.monotonic()
+                if line:
+                    text = line.decode(errors="replace").strip()
+                    if not text:
+                        continue
+                    try:
+                        ev = _json.loads(text)
+                    except ValueError:
+                        stdout_garbage.append(text)
+                        continue
+                    _handle_event(ev)
+
+        def _read_stderr():
+            for line in iter(proc.stderr.readline, b""):
+                last_output[0] = time.monotonic()
+                if line:
+                    stderr_lines.append(line)
+
+        t_out = threading.Thread(target=_read_stdout, daemon=True)
+        t_err = threading.Thread(target=_read_stderr, daemon=True)
+        t_out.start()
+        t_err.start()
+
+        last_seen = last_output[0]
+        next_heartbeat = last_seen + heartbeat_sec
+        while proc.poll() is None:
+            if last_output[0] != last_seen:
+                last_seen = last_output[0]
+                next_heartbeat = last_seen + heartbeat_sec
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                elapsed = int(now - start)
+                log(f"still working… {elapsed}s")
+                next_heartbeat = now + heartbeat_sec
+            time.sleep(0.2)
+
+        t_out.join(timeout=1)
+        t_err.join(timeout=1)
+
+        if proc.returncode == 0:
+            return True, None
+
+        last_stderr = b"".join(stderr_lines).strip() or b""
+        stderr_text = (last_stderr or b"").decode(errors="replace")
+        retryable = (
+            "does not exist or you do not have access" in stderr_text
+            or "model_not_found" in stderr_text
+            or "invalid model" in stderr_text.lower()
+        )
+        if retryable:
+            log(f"codex model unavailable: {model_name}, trying fallback")
+            continue
+
+        log(f"codex failed with exit code {proc.returncode}")
+        if stderr_text:
+            log("--- stderr start ---")
+            print(stderr_text, end="")
+            log("--- stderr end ---")
+        if stdout_garbage:
+            log("--- stdout garbage start ---")
+            for line in stdout_garbage:
+                print(line)
+            log("--- stdout garbage end ---")
+        return False, None
+
+    log("codex failed for all configured models")
+    if last_stderr:
+        log("--- stderr start ---")
+        print(last_stderr.decode(errors="replace"), end="")
+        log("--- stderr end ---")
+    return False, None
+
+
+def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None, cli_path=None, cli_name=None):
+    import json as _json, threading
+    cli_path = cli_path or shutil.which(cli_name or "claude")
+    if not cli_path:
+        log("claude CLI not found on PATH")
+        return False, None
+
+    full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
+
+    model_arg = []
+    model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "").strip()
+    if model_name:
+        model_arg = ["--model", model_name]
+        log(f"agent provider: {cli_name or 'claude'}, model: {model_name}")
+    else:
+        log(f"agent provider: {cli_name or 'claude'}, model: default")
+
     proc = subprocess.Popen(
         [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
          "--output-format", "stream-json",
-         full_prompt, "--allowedTools", allowed_tools],
+         full_prompt, "--allowedTools", allowed_tools, *model_arg],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, # Capture stderr
         stdin=subprocess.DEVNULL,
@@ -402,7 +573,6 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
             line = line.decode().strip()
             if line:
                stderr_output.append(line)
-               # log(f"STDERR: {line}") # optional: log all stderr
 
     stderr_reader = threading.Thread(target=read_stderr, daemon=True)
     stderr_reader.start()
@@ -480,6 +650,16 @@ def run_claude(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=Non
         print()
         log("stopped")
         return False, session_id
+
+
+def run_agent(prompt, allowed_tools="Read,Write,Edit,Bash,Glob,Grep", agent=None):
+    cli = require_agent_cli()
+    if not cli:
+        return False, None
+    cli_name, cli_path = cli
+    if cli_name == "codex":
+        return run_codex(prompt, allowed_tools, agent, cli_path)
+    return run_claude(prompt, allowed_tools, agent, cli_path, cli_name)
 
 # --- task planning ---
 
@@ -560,7 +740,7 @@ def plan_next_task():
     today = time.strftime("%Y-%m-%d")
     prompt = PLAN_PROMPT.replace("{today}", today)
     log("planning next task")
-    ok, session_id = run_claude(prompt)
+    ok, session_id = run_agent(prompt)
     if ok:
         log("task planned")
     else:
@@ -611,7 +791,7 @@ def run():
             if agent_def:
                 log(f"using agent: {agent_name}")
 
-        ok, session_id = run_claude(prompt, allowed_tools=task["tools"], agent=agent_def)
+        ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def)
         if session_id:
             update_task_meta(task, session=session_id)
         if not ok:
@@ -619,7 +799,8 @@ def run():
             commit_task(task, f"Failed Task: {name}")
             log(f"task failed: {name}")
             return
-        if check_done(task["done"]):
+        passed, details = check_done_details(task["done"])
+        if passed:
             commit = sh("git", "rev-parse", "HEAD")
             update_task_meta(task, status="completed", commit=commit)
             commit_task(task, f"Complete Task: {name}")
@@ -628,6 +809,12 @@ def run():
             update_task_meta(task, status="incomplete")
             commit_task(task, f"Incomplete Task: {name}")
             log(f"task did not complete: {name}")
+            if details:
+                log("done conditions:")
+                for cond, ok in details:
+                    mark = "✓" if ok else "✗"
+                    log(f"  {mark} {cond}")
+            log(f"task file: {task['_path'].name}")
             return
 
 if __name__ == "__main__":
@@ -677,6 +864,11 @@ is your entire instruction for that run. You MUST follow these rules:
 
 Tasks are markdown files in \`tasks/\` named \`YYYY-MM-DD-slug.md\`. Every task
 has YAML frontmatter for runner metadata, then a fixed set of markdown sections.
+
+### Naming conventions (must follow)
+- Initiatives: \`YYYY-slug.md\`
+- Projects: \`YYYY-MM-slug.md\`
+- Tasks: \`YYYY-MM-DD-slug.md\`
 
 \`\`\`markdown
 ---
