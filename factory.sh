@@ -706,7 +706,7 @@ Commit it.
 
 def plan_next_task():
     today = time.strftime("%Y-%m-%d")
-    prompt = PLAN_PROMPT.format(today=today)
+    prompt = PLAN_PROMPT.replace("{today}", today)
     log("planning next task")
     ok, session_id = run_agent(prompt)
     if ok:
@@ -875,7 +875,7 @@ If these constraints are violated, fix them before creating new work.
 
 When planning or selecting work, you may only read items with:
 
-status ∈ {active, backlog, suspended}
+status ∈ (active, backlog, suspended)
 
 You must ignore `completed` and `stopped` items unless explicitly investigating regressions.
 
@@ -908,8 +908,8 @@ has YAML frontmatter for runner metadata, then a fixed set of markdown sections.
 \`\`\`markdown
 ---
 tools: Read,Write,Edit,Bash
-project: projects/name.md
-parent: YYYY-MM-DD-other-task.md
+parent: projects/name.md
+previous: YYYY-MM-DD-other-task.md
 ---
 
 What to do. This is the prompt — the agent's instruction for this run.
@@ -947,8 +947,8 @@ Author-set fields:
 
 - **tools** — which Claude Code tools the agent can use (default:
   \`Read,Write,Edit,Bash,Glob,Grep\`)
-- **project** — project file this task advances (example: \`projects/2026-auth-hardening.md\`)
-- **parent** — filename of a task that must complete first (dependency)
+- **parent** — project file this task advances (example: projects/2026-auth-hardening.md). Omit for factory maintenance tasks.
+- **previous** — filename of a task that must complete first (dependency)
 
 Runner-managed fields (set automatically, do not write these yourself):
 
@@ -981,19 +981,21 @@ header.
 
 Your task is to add three sections to this worktree's CLAUDE.md: **Purpose**,
 **Measures**, and **Tests**.
-Each section must include three levels of abstraction: Existential, Strategic, and Tactical.
-	•	Existential — the real-world outcome this software exists to produce. Describe what becomes true for its users or domain when it is succeeding. Keep this concrete and outcome-focused, not about code aesthetics.
-	•	Strategic — the kinds of improvements that compound over time in this repository. These define direction and leverage, not individual fixes.
-	•	Tactical — specific, near-term improvements grounded in observable friction in this codebase. These should reference real files, workflows, or behaviors.
+
+Each section must include three levels of abstraction: **Existential**, **Strategic**, and **Tactical**.
+
+- **Existential** — the real-world outcome this software exists to produce. Describe what becomes true for its users or domain when it is succeeding. Keep this concrete and outcome-focused, not about code aesthetics.
+- **Strategic** — the kinds of improvements that compound over time in this repository. These define direction and leverage, not individual fixes.
+- **Tactical** — specific, near-term improvements grounded in observable friction in this codebase. These should reference real files, workflows, or behaviors.
 
 All levels must remain software-focused and grounded in what you observe in the repository. Avoid philosophical framing, abstract mission language, or organizational themes.
 
 Keep the sections tight. Do not write essays.
 
 Bullet guidance:
-	•	Existential: 3–5 bullets (clear, durable outcomes).
-	•	Strategic: 5–8 bullets (compounding directions tied to repo structure).
-	•	Tactical: 5–10 bullets (specific, actionable, repo-level improvements).
+- **Existential**: 3–5 bullets.
+- **Strategic**: 5–8 bullets.
+- **Tactical**: 5–10 bullets.
 
 Favor precision over volume. Each bullet should express a distinct idea.
 
@@ -1010,12 +1012,12 @@ automation system: "Routine decisions happen without human intervention." Keep
 it concrete and tied to the people or problem the software serves. Do not
 describe the character of the codebase here — that belongs in strategic purpose.
 
-**Strategic Purpose** (5-10 bullets) — Define medium-term direction tied to
+**Strategic Purpose** (5-8 bullets) — Define medium-term direction tied to
 what you observe in the repo. Examples: reduce complexity in core paths,
 improve developer ergonomics, prefer explicitness over magic, strengthen
 invariants and contracts, eliminate sources of brittleness.
 
-**Tactical Purpose** (10-20 bullets) — Define immediate, repo-specific
+**Tactical Purpose** (5-10 bullets) — Define immediate, repo-specific
 priorities. Be concrete and name areas of the repo. Examples: simplify a
 confusing module, remove dead code, reduce test flakiness, improve error
 messages, clarify public APIs, reduce steps to run locally.
@@ -1036,11 +1038,11 @@ If it's a developer tool: developers ship faster, debugging takes fewer steps,
 onboarding a new team member is easier. Tie these directly to the existential
 purpose — what would be true in the world if this software were succeeding?
 
-**Strategic Measures** (5-10 bullets) — Medium-term progress signals. Examples:
+**Strategic Measures** (5-8 bullets) — Medium-term progress signals. Examples:
 reduced complexity in core modules, faster test runs, fewer build steps,
 clearer documentation, less coupling between subsystems.
 
-**Tactical Measures** (10-20 bullets) — Concrete, checkable signals tied
+**Tactical Measures** (5-10 bullets) — Concrete, checkable signals tied
 directly to the tactical purpose. Each one should answer: "How do I know
 this specific thing got better?" Examples: tests pass, lint clean, CI time
 decreased by N seconds, fewer TODOs in module X, setup runs in fewer steps,
@@ -1060,11 +1062,11 @@ concretely better? Would the person this software serves notice or care about
 this change? Does it bring the system closer to fulfilling its reason for
 existing?
 
-**Strategic Tests** (5-10 bullets) — Does this compound future improvements?
+**Strategic Tests** (5-8 bullets) — Does this compound future improvements?
 Does it reduce brittleness? Does it remove duplication? Does it improve
 clarity in the most-used paths?
 
-**Tactical Tests** (10-20 bullets) — Specific, answerable questions about
+**Tactical Tests** (5-10 bullets) — Specific, answerable questions about
 immediate outcomes. These should reference concrete commands, user actions, and
 the tactical purpose and measures directly. Examples:
 
@@ -1095,8 +1097,7 @@ agent has no way to evaluate whether a change is worthwhile.
 
 - Confirm `CLAUDE.md` contains `## Purpose`, `## Measures`, and `## Tests`
   sections with Existential, Strategic, and Tactical subsections.
-- Confirm each subsection has the right number of bullets (3-5 existential,
-  5-10 strategic, 10-20 tactical).
+- Confirm each subsection has the right number of bullets (3-5 existential, 5-10 strategic, 10-20 tactical) → (3-5 existential, 5-8 strategic, 5-10 tactical)
 - Read the sections back and check they are grounded in the actual repo, not
   generic platitudes.
 TASK
