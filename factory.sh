@@ -141,20 +141,10 @@ def ensure_project_worktree(project_path):
 
 def build_epilogue(task, project_dir):
     """Build epilogue instruction appended to project task prompts."""
-    return f"""
-
----
-
-## Epilogue
-
-You are working in a project worktree at `{project_dir}`.
-Your code changes go here.
-
-When you are done:
-1. Stage and commit your code changes in this worktree (the current directory).
-   Use a short, descriptive commit message.
-2. Stop. The runner will handle bookkeeping.
-"""
+    epilogue_md = ROOT / "EPILOGUE.md"
+    if not epilogue_md.exists():
+        return ""
+    return epilogue_md.read_text().replace("{project_dir}", str(project_dir))
 
 def log(msg):
     print(f"\033[33mfactory:\033[0m {msg}", flush=True)
@@ -697,86 +687,13 @@ def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log
 
 # --- task planning ---
 
-PLAN_PROMPT = """\
-You are the factory's planning agent.
-
-Your job is to allocate focus and create exactly one next task.
-
-You operate over three flat levels of structure (each is a folder of markdown files):
-- Initiatives (initiatives/)
-- Projects (projects/)
-- Tasks (tasks/)
-
-Relationships are defined by frontmatter fields.
-
-# Invariants (Must Always Hold)
-- Exactly 1 active initiative
-- At most 2 active projects
-- At most 3 active tasks
-- At most 1 active unparented (factory) task
-
-If these constraints are violated, fix them before creating anything new.
-
-# Read-Set Rule
-When planning, only read items with status ∈ (active, backlog, suspended).
-Ignore completed and stopped items unless explicitly debugging regressions.
-
-# Planning Order
-1. Ensure invariants hold.
-2. Prefer refinement over creation.
-3. Only create new structure if necessary.
-4. Write exactly one task.
-5. Never create multiple tasks in a single planning run.
-
-# Selection Logic
-1. If there is a ready active task, do nothing.
-2. If no active initiative exists:
-   - Promote exactly one backlog initiative to active.
-   - If none exist, create up to 3 backlog initiatives and activate exactly one.
-3. If the active initiative has no active project:
-   - Promote one backlog project under it.
-   - If none exist, create exactly one backlog project under it and activate it.
-4. If the active project has no ready tasks:
-   - Create 1–3 backlog tasks under it.
-   - Activate exactly one.
-
-Unparented tasks are factory maintenance tasks. At most one may be active at any time.
-
-# Task Creation Rules
-When writing a task:
-- Atomic, completable in one session.
-- Names specific files/functions/behaviors.
-- Produces observable change.
-- Includes strict Done conditions.
-- Advances the active project (or is an unparented factory task).
-- Does not create parallel structure.
-
-Never create more than one task.
-
-# Output
-Create exactly one file in tasks/ named {today}-slug.md.
-
-Format:
-```markdown
----
-tools: Read,Write,Edit,Bash
-parent: projects/name.md   # omit if factory maintenance task
-previous: YYYY-MM-DD-other.md   # optional
----
-
-Concrete instruction.
-
-## Done
-- `file_exists(...)`
-...
-```
-
-Do NOT commit. The runner will commit your work.
-"""
-
 def plan_next_task():
+    planning_md = ROOT / "PLANNING.md"
+    if not planning_md.exists():
+        log("PLANNING.md not found")
+        return False
     today = time.strftime("%Y-%m-%d")
-    prompt = PLAN_PROMPT.replace("{today}", today)
+    prompt = planning_md.read_text().replace("{today}", today)
     # snapshot existing task files before planning
     before = set(f.name for f in TASKS_DIR.glob("*.md")) if TASKS_DIR.exists() else set()
     log("planning next task")
@@ -920,7 +837,7 @@ def run():
         commit_work_dir = work_dir if is_project_task else None
         if passed:
             if is_project_task:
-                update_task_meta(task, status="completed", project_commit=head_after)
+                update_task_meta(task, status="completed", commit=head_after)
             else:
                 update_task_meta(task, status="completed", commit=head_after)
             commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=commit_work_dir)
@@ -983,16 +900,14 @@ is your entire instruction for that run. You MUST follow these rules:
 5. **Stop when done.** Do not loop, do not start the next task, do not look
    for more work. Complete your task, commit, and stop.
 
-
 ## Work Model
 
-All work is organized in flat folders:
+All work is organized in three flat folders. There is no folder nesting.
+Relationships are defined by frontmatter fields.
 
-- \`initiatives/\`
-- \`projects/\`
-- \`tasks/\`
-
-There is no folder nesting. Relationships are defined by frontmatter fields.
+- \`initiatives/\` — high-level goals (see \`INITIATIVES.md\`)
+- \`projects/\` — scoped deliverables under an initiative (see \`PROJECTS.md\`)
+- \`tasks/\` — atomic units of work under a project (see \`TASKS.md\`)
 
 ### Lifecycle (Uniform Everywhere)
 
@@ -1020,8 +935,6 @@ stop_reason: failed
 
 ### Scarcity Invariants (Must Always Hold)
 
-The system maintains:
-
 - Exactly **1 active initiative**
 - At most **2 active projects**
 - At most **3 active tasks**
@@ -1035,35 +948,81 @@ When planning or selecting work, you may only read items with:
 
 status ∈ (active, backlog, suspended)
 
-You must ignore \`completed\` and \`stopped\` items unless explicitly investigating regressions.
-
 Completed work lives in git history. It does not remain active context.
+CLAUDE
+}
 
+# --- writer: INITIATIVES.md ---
+write_initiatives_md() {
+cat > "$FACTORY_DIR/INITIATIVES.md" <<'INITIATIVES'
+# Initiatives
+
+Initiatives are high-level goals that define **what** the factory is trying to
+achieve. Each initiative is a markdown file in `initiatives/` named
+`YYYY-slug.md`.
+
+## Format
+
+```markdown
+---
+status: backlog
 ---
 
-## Planning Discipline
+What this initiative aims to achieve and why.
+```
 
-Before creating new initiatives, projects, or tasks:
+## Frontmatter
 
-1. Check whether an active item already exists at that level.
-2. Refine or extend existing work before creating parallel work.
-3. Default to \`backlog\` when creating new items.
-4. Activate exactly one new item per layer when required.
+- **status** — lifecycle state (backlog, active, suspended, completed, stopped)
+INITIATIVES
+}
 
-Creation is a last resort.
-Refinement is preferred.
+# --- writer: PROJECTS.md ---
+write_projects_md() {
+cat > "$FACTORY_DIR/PROJECTS.md" <<'PROJECTS'
+# Projects
 
-## Task format
+Projects are scoped deliverables that advance an initiative. Each project is a
+markdown file in `projects/` named `YYYY-MM-slug.md`.
 
-Tasks are markdown files in \`tasks/\` named \`YYYY-MM-DD-slug.md\`. Every task
-has YAML frontmatter for runner metadata, then a fixed set of markdown sections.
+A project should be well-specced: clear goals, concrete deliverables, and an
+explanation of how it supports the parent initiative and relates to sibling
+projects.
 
-### Naming conventions (must follow)
-- Initiatives: \`YYYY-slug.md\`
-- Projects: \`YYYY-MM-slug.md\`
-- Tasks: \`YYYY-MM-DD-slug.md\`
+## Format
 
-\`\`\`markdown
+```markdown
+---
+status: backlog
+parent: initiatives/YYYY-slug.md
+---
+
+What this project delivers and how it advances the parent initiative.
+
+## Goals
+
+Concrete outcomes that define "done" for this project.
+```
+
+## Frontmatter
+
+- **status** — lifecycle state (backlog, active, suspended, completed, stopped)
+- **parent** — initiative this project advances (example: `initiatives/2026-improve-testing.md`)
+PROJECTS
+}
+
+# --- writer: TASKS.md ---
+write_tasks_md() {
+cat > "$FACTORY_DIR/TASKS.md" <<'TASKS'
+# Tasks
+
+Tasks are atomic units of work. Each task is a markdown file in `tasks/`
+named `YYYY-MM-DD-slug.md`. The runner (`factory.py`) picks up tasks, runs
+them one at a time, and checks their completion conditions.
+
+## Format
+
+```markdown
 ---
 tools: Read,Write,Edit,Bash
 parent: projects/name.md
@@ -1078,51 +1037,148 @@ Be specific and concrete. Name files, functions, and behaviors.
 Completion conditions checked by the runner after the agent finishes.
 One condition per line. All must pass. Supported conditions:
 
-- \\\`section_exists("text")\\\` — text appears in CLAUDE.md
-- \\\`no_section("text")\\\` — text does not appear in CLAUDE.md
-- \\\`file_exists("path")\\\` — file exists in the worktree
-- \\\`file_absent("path")\\\` — file does not exist
-- \\\`file_contains("path", "text")\\\` — file contains text
-- \\\`file_missing_text("path", "text")\\\` — file missing or lacks text
-- \\\`command("cmd")\\\` — shell command exits 0
-- \\\`always\\\` — task never completes (recurring)
+- `section_exists("text")` — text appears in CLAUDE.md
+- `no_section("text")` — text does not appear in CLAUDE.md
+- `file_exists("path")` — file exists in the worktree
+- `file_absent("path")` — file does not exist
+- `file_contains("path", "text")` — file contains text
+- `file_missing_text("path", "text")` — file missing or lacks text
+- `command("cmd")` — shell command exits 0
+- `always` — task never completes (recurring)
 
 ## Context
 
-Why this task exists. What purpose or measure it serves. Link to specific
-items in the Purpose, Measures, or Tests sections of CLAUDE.md so the
-agent understands how this work connects to the repo's goals.
+Why this task exists. What purpose or measure it serves.
 
 ## Verify
 
-How the agent should check its own work before committing. Concrete
-commands to run, files to inspect, behaviors to confirm. The agent
-should do these checks — they are instructions, not just documentation.
-\`\`\`
+How the agent should check its own work before committing.
+```
 
-### Frontmatter fields
+## Frontmatter
 
 Author-set fields:
 
-- **tools** — which Claude Code tools the agent can use (default:
-  \`Read,Write,Edit,Bash,Glob,Grep\`)
-- **parent** — project file this task advances (example: projects/2026-auth-hardening.md). Omit for factory maintenance tasks.
+- **tools** — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`)
+- **parent** — project this task advances (example: `projects/2026-01-auth-hardening.md`). Omit for factory maintenance tasks.
 - **previous** — filename of a task that must complete first (dependency)
 
 Runner-managed fields (set automatically, do not write these yourself):
 
-- **status** — lifecycle state: \`backlog\`, \`active\`, \`suspended\`, \`completed\`, \`stopped\`
-- **stop_reason** — required if \`status: stopped\`
+- **status** — lifecycle state
+- **stop_reason** — required if `status: stopped`
 - **pid** — process ID of the runner
 - **session** — Claude session ID
 - **commit** — HEAD commit hash when the task completed
 
-### Creating follow-up tasks
+## Creating follow-up tasks
 
-If your task creates follow-up tasks, set the \`previous\` field in the new
-task's frontmatter to the filename of the current task so the runner
-knows the dependency order.
-CLAUDE
+If your task creates follow-up tasks, set the `previous` field in the new
+task's frontmatter to the filename of the current task so the runner knows
+the dependency order.
+TASKS
+}
+
+# --- writer: PLANNING.md ---
+write_planning_md() {
+cat > "$FACTORY_DIR/PLANNING.md" <<'PLANNING'
+# Planning
+
+You are the factory's planning agent.
+
+Your job is to review progress and ensure the next task is ready.
+
+Read `INITIATIVES.md`, `PROJECTS.md`, and `TASKS.md` for format specs.
+
+You operate over three flat levels of structure (each is a folder of markdown files):
+- Initiatives (initiatives/)
+- Projects (projects/)
+- Tasks (tasks/)
+
+Relationships are defined by frontmatter fields.
+
+# Invariants (Must Always Hold)
+- Exactly 1 active initiative
+- At most 2 active projects
+- At most 3 active tasks
+- At most 1 active unparented (factory) task
+
+If these constraints are violated, fix them before creating anything new.
+
+# Read-Set Rule
+When planning, only read items with status ∈ (active, backlog, suspended).
+Ignore completed and stopped items unless explicitly debugging regressions.
+
+# Planning Order
+1. Ensure invariants hold.
+2. Prefer refinement over creation.
+3. Only create new structure if necessary.
+4. Write exactly one task.
+5. Never create multiple tasks in a single planning run.
+
+# Selection Logic
+1. If there is a ready active task, do nothing.
+2. If no active initiative exists:
+   - Promote exactly one backlog initiative to active.
+   - If none exist, create up to 3 backlog initiatives and activate exactly one.
+3. If the active initiative has no active project:
+   - Promote one backlog project under it.
+   - If none exist, create exactly one backlog project under it and activate it.
+4. If the active project has no ready tasks:
+   - Create 1–3 backlog tasks under it.
+   - Activate exactly one.
+
+Unparented tasks are factory maintenance tasks. At most one may be active at any time.
+
+# Task Creation Rules
+When writing a task:
+- Atomic, completable in one session.
+- Names specific files/functions/behaviors.
+- Produces observable change.
+- Includes strict Done conditions.
+- Advances the active project (or is an unparented factory task).
+- Does not create parallel structure.
+
+Never create more than one task.
+
+# Output
+Create exactly one file in tasks/ named {today}-slug.md.
+
+Format:
+```markdown
+---
+tools: Read,Write,Edit,Bash
+parent: projects/name.md   # omit if factory maintenance task
+previous: YYYY-MM-DD-other.md   # optional
+---
+
+Concrete instruction.
+
+## Done
+- `file_exists(...)`
+...
+```
+
+Do NOT commit. The runner will commit your work.
+PLANNING
+}
+
+# --- writer: EPILOGUE.md ---
+write_epilogue_md() {
+cat > "$FACTORY_DIR/EPILOGUE.md" <<'EPILOGUE'
+
+---
+
+## Epilogue
+
+You are working in a project worktree at `{project_dir}`.
+Your code changes go here.
+
+When you are done:
+1. Stage and commit your code changes in this worktree (the current directory).
+   Use a short, descriptive commit message.
+2. Stop. The runner will handle bookkeeping.
+EPILOGUE
 }
 
 # --- writer: bootstrap task ---
@@ -1356,6 +1412,11 @@ bootstrap() {
   printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$FACTORY_DIR/config.json"
   write_runner
   write_claude_md
+  write_initiatives_md
+  write_projects_md
+  write_tasks_md
+  write_planning_md
+  write_epilogue_md
   write_bootstrap_task
   write_hook
 
