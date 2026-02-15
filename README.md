@@ -128,12 +128,13 @@ The agent works in the foreground, streaming tool calls and costs to the termina
 ```bash
 bash factory.sh dev          # tear down and re-bootstrap every time
 bash factory.sh reset        # tear down only
+bash factory.sh help         # show help
 ```
 
-**Destroy**
+**Teardown**
 
 ```bash
-./factory destroy
+./factory teardown
 ```
 
 Removes `.factory/`, deletes `factory/*` project branches, restores the original `factory.sh`, and removes the `./factory` launcher. Prompts for confirmation.
@@ -164,10 +165,11 @@ No other dependencies. Everything is self-contained in `factory.sh`.
 - **Standalone factory repo** — `.factory/` is its own git repo for metadata. Project worktrees give the agent isolated branches in the source repo. Your working tree and branch are never touched.
 - **Multi-agent CLI support** — automatically detects and uses `claude`, `claude-code`, or `codex` (first found on `PATH`). Codex gets model fallback with retries.
 - **No config files** — everything is self-contained in `factory.sh`. No `.env`, no `config.yaml`, no external dependencies beyond an agent CLI + git + python.
-- **Self-replacing installer** — `factory.sh` is a one-shot installer that replaces itself with a tiny launcher script. The original is preserved in `.factory/` for `./factory destroy` to restore.
+- **Self-replacing installer** — `factory.sh` is a one-shot installer that replaces itself with a tiny launcher script. The original is preserved in `.factory/` for `./factory teardown` to restore.
 - **Headless agents** — Claude runs with `--dangerously-skip-permissions` in print mode; Codex runs with `exec --json`. No interactive prompts, no TUI.
 - **Local-only git ignore** — uses `.git/info/exclude` instead of `.gitignore` so factory artifacts never pollute your repo's tracked files.
 - **Autonomous planning** — when no tasks are ready, the runner reads `PLANNING.md` and invokes a planning agent that creates the next task following scarcity invariants.
+- **Failure handling** — when a task fails or completes with unmet conditions, the planning agent follows a structured failure analysis protocol (observe, diagnose, prescribe, retry) defined in `FAILURE.md`. Tasks track `stop_reason` and `status` in frontmatter so the agent can learn from what went wrong.
 - **Three-level work hierarchy** — initiatives, projects, and tasks provide structure without bureaucracy. Flat folders, frontmatter relationships, no nesting.
 - **Agent personas** — custom agent definitions in `agents/` let tasks run with specialized system prompts and tool permissions.
 - **Teleological grounding** — the Purpose framework gives the agent a final cause. Every piece of work traces back to *why*, not just *what*. This is the difference between an agent that produces commits and one that produces progress.

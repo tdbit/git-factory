@@ -10,6 +10,7 @@ bash factory.sh [claude|codex]  # bootstrap with explicit provider
 ./factory                    # resume
 bash factory.sh dev          # reset + bootstrap + run (no launcher)
 bash factory.sh reset        # tear down only
+bash factory.sh help         # show help
 ./factory teardown           # remove everything, restore factory.sh
 ```
 
@@ -37,6 +38,7 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/TASKS.md` | Task format spec |
 | `.factory/PURPOSE.md` | Purpose, Measures, and Tests (created by bootstrap task) |
 | `.factory/PLANNING.md` | Planning agent instructions |
+| `.factory/FAILURE.md` | Failure analysis protocol |
 | `.factory/EPILOGUE.md` | Project task epilogue template |
 | `.factory/agents/` | Agent persona definitions (markdown) |
 | `.factory/initiatives/` | High-level goals (YYYY-slug.md) |
@@ -63,17 +65,18 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
    - `write_projects_md()` — project format spec
    - `write_tasks_md()` — task format spec
    - `write_planning_md()` — planning agent instructions
+   - `write_failure_md()` — failure analysis protocol (observe/diagnose/prescribe/retry)
    - `write_epilogue_md()` — project task epilogue template
-   - `write_bootstrap_task()` — initial `define-purpose` task
+   - `write_bootstrap_task()` — two chained bootstrap tasks (factory purpose → repo purpose)
    - `write_launcher()` — `./factory` launcher script
    - `write_hook()` — post-commit hook
    - `ensure_excluded()` — add `.factory/` to `.git/info/exclude`
    - `bootstrap()` — create dirs, write content, git init + commit
-6. **Command dispatch** — `case` handles `reset`, `dev`, default (resume/bootstrap)
+6. **Command dispatch** — `case` handles `reset`, `dev`, `help`, default (resume/bootstrap)
 
 ## Task system
 
-Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each has YAML frontmatter (`tools`, `parent`) and markdown sections (`## Done`, `## Context`, `## Verify`).
+Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each has YAML frontmatter (`tools`, `parent`, `status`, `stop_reason`, `previous`) and markdown sections (`## Done`, `## Context`, `## Verify`).
 
 ### Completion conditions (in `## Done`)
 

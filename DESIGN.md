@@ -3,9 +3,9 @@
 ## Bootstrap sequence
 
 1. `factory.sh` creates `.factory/` as a standalone git repo (via `git init`) for factory metadata
-2. It writes a Python runner (`factory.py`), markdown instruction files (`CLAUDE.md`, `INITIATIVES.md`, `PROJECTS.md`, `TASKS.md`, `PLANNING.md`, `EPILOGUE.md`), and a bootstrap task into `.factory/`
+2. It writes a Python runner (`factory.py`), markdown instruction files (`CLAUDE.md`, `INITIATIVES.md`, `PROJECTS.md`, `TASKS.md`, `PLANNING.md`, `FAILURE.md`, `EPILOGUE.md`), and two chained bootstrap tasks into `.factory/`
 3. The runner launches the agent CLI in headless mode (Claude uses `--dangerously-skip-permissions`; Codex uses `exec --json`)
-4. On first run, the agent reads your repo's `CLAUDE.md` and `README.md`, then writes Purpose, Measures, and Tests sections that guide all future work
+4. On first run, the agent executes two chained bootstrap tasks: first it defines the factory's own Purpose, then it reads your repo and defines the repo's Purpose, Measures, and Tests
 5. After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
 6. For project tasks that modify source code, the runner creates git worktrees under `.factory/worktrees/` on `factory/*` branches in the source repo
 
@@ -24,6 +24,7 @@ your-repo/
     PROJECTS.md         # project format spec
     TASKS.md            # task format spec
     PLANNING.md         # planning agent instructions
+    FAILURE.md          # failure analysis protocol
     EPILOGUE.md         # project task epilogue template
     config.json         # bootstrap config (provider, default branch, worktrees path)
     agents/             # agent persona definitions (markdown)
@@ -109,6 +110,29 @@ When no ready task exists, the runner automatically invokes a **planning agent**
 4. Commits the task file to the factory repo
 
 The planning agent reads `INITIATIVES.md`, `PROJECTS.md`, and `TASKS.md` for format specs. Its instructions are editable after bootstrap — no need to re-extract the runner.
+
+## Failure handling and self-modification
+
+When a task fails or completes with unmet conditions, the runner marks it `status: stopped` with a `stop_reason` (`failed` or `incomplete`). The planning agent is then required to follow the failure analysis protocol in `.factory/FAILURE.md` before creating any new work.
+
+The protocol has four steps:
+
+1. **Observe** — read the task file, run log, and git diff to understand what actually happened
+2. **Diagnose** — identify which factory Measure (from `PURPOSE.md`) was violated and which Test should have caught it
+3. **Prescribe** — create a new task that targets a *factory system file* (`factory.py`, `CLAUDE.md`, `PLANNING.md`, etc.) to close the gap
+4. **Retry** — only after the systemic fix is in place, create a new task for the original work
+
+This is the self-modifying part: the factory doesn't just retry failed work — it modifies its own instructions, runner code, or format specs to prevent the same class of failure from recurring. The failed task stays stopped. The fix task strengthens a Measure or adds a Test. The retry task benefits from the improved system.
+
+Failures are classified by level:
+
+| Level | Scope | Example |
+|---|---|---|
+| **Existential** | Factory cannot operate | Runner crashes, bootstrap fails |
+| **Strategic** | Systematically wrong results | Prompt drops context, specs are ambiguous |
+| **Tactical** | Narrow, one-off gap | Missing instruction, edge case in a condition |
+
+The level determines the scope of the prescription — existential failures demand runner fixes, strategic failures demand instruction rewrites, tactical failures demand narrower patches.
 
 ## Task system
 
