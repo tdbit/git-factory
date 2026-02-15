@@ -22,12 +22,12 @@ if [[ -z "$PROVIDER" ]]; then
 fi
 
 # --- detect default branch ---
-DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')" || true
-if [[ -z "$DEFAULT_BRANCH" ]]; then
-  git show-ref --verify --quiet refs/heads/main && DEFAULT_BRANCH="main" ||
-  git show-ref --verify --quiet refs/heads/master && DEFAULT_BRANCH="master" ||
-  DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-fi
+REMOTE_HEAD="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')" || true
+DEFAULT_BRANCH=""
+for _b in main master "$REMOTE_HEAD"; do
+  [[ -n "$_b" ]] && git show-ref --verify --quiet "refs/heads/$_b" && DEFAULT_BRANCH="$_b" && break
+done
+[[ -n "$DEFAULT_BRANCH" ]] || DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 # --- check dependencies ---
 [[ -n "$PROVIDER" ]] || { echo -e "\033[31mfactory:\033[0m error: no agent CLI found (tried: claude, claude-code, codex)" >&2; exit 1; }
