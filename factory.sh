@@ -160,7 +160,7 @@ def log(msg):
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
         _has_progress = False
-    print(f"\033[33mfactory:\033[0m {msg}", flush=True)
+    print(msg, flush=True)
 
 def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
@@ -471,7 +471,7 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
             if etype == "item.started":
                 cmd = item.get("command") or ""
                 if cmd:
-                    _show_progress(f"\033[33mfactory:\033[0m \033[36m  → run:\033[0m \033[2m{cmd}\033[0m")
+                    _show_progress(f"\033[36m  → run:\033[0m \033[2m{cmd}\033[0m")
                 return
             if etype == "item.completed":
                 cmd = item.get("command") or ""
@@ -630,9 +630,9 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
                             detail = cmd[:maxw] + ("…" if len(cmd) > maxw else "")
                         lname = name.lower()
                         if detail:
-                            _show_progress(f"\033[33mfactory:\033[0m \033[36m  → {lname}:\033[0m \033[2m{detail}\033[0m")
+                            _show_progress(f"\033[36m  → {lname}:\033[0m \033[2m{detail}\033[0m")
                         else:
-                            _show_progress(f"\033[33mfactory:\033[0m \033[36m  → {lname}\033[0m")
+                            _show_progress(f"\033[36m  → {lname}\033[0m")
             elif t == "result":
                 session_id = ev.get("session_id", session_id)
                 cost = ev.get("cost_usd") or ev.get("total_cost_usd")
@@ -688,6 +688,7 @@ def plan_next_task():
     today = time.strftime("%Y-%m-%d")
     prompt = planning_md.read_text().replace("{today}", today)
     log("planner started")
+    head_before = sh("git", "rev-parse", "HEAD")
     run_log = _open_run_log("planning")
     try:
         ok, session_id = run_agent(prompt, run_log=run_log)
@@ -697,6 +698,10 @@ def plan_next_task():
         log("planning failed")
         return False
     try:
+        # squash any agent commits back to pre-planning state
+        head_after = sh("git", "rev-parse", "HEAD")
+        if head_after != head_before:
+            sh("git", "reset", "--soft", head_before)
         sh("git", "add", "-A")
         porcelain = sh("git", "status", "--porcelain")
         if not porcelain:
@@ -826,6 +831,11 @@ def run():
             return
         if not agent_committed:
             log("agent made no commits")
+        # squash agent commits into the runner's commit (factory tasks only)
+        if agent_committed and not is_project_task:
+            subprocess.check_output(
+                ["git", "reset", "--soft", head_before], cwd=work_dir, stderr=subprocess.STDOUT
+            )
         passed, details = check_done_details(task["done"], target_dir=work_dir)
         commit_work_dir = work_dir if is_project_task else None
         if passed:
@@ -1491,7 +1501,7 @@ fi
 write_hook() {
 cat > "$FACTORY_DIR/hooks/post-commit" <<'HOOK'
 #!/usr/bin/env bash
-echo -e "\033[33mfactory:\033[0m NEW COMMIT"
+echo -e "NEW COMMIT"
 HOOK
 chmod +x "$FACTORY_DIR/hooks/post-commit"
 }
@@ -1530,7 +1540,7 @@ bootstrap() {
   git init "$FACTORY_DIR" >/dev/null 2>&1
   git -C "$FACTORY_DIR" config core.hooksPath hooks
   local TASK_FILE="$(ls "$FACTORY_DIR/tasks/"*.md 2>/dev/null | head -1)"
-  local TASK_NAME="$(basename "$TASK_FILE" .md | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//')"
+  local TASK_NAME="$(basename "$TASK_FILE" .md)"
   (
     cd "$FACTORY_DIR"
     git add -A
