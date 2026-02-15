@@ -35,6 +35,7 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/INITIATIVES.md` | Initiative format spec |
 | `.factory/PROJECTS.md` | Project format spec |
 | `.factory/TASKS.md` | Task format spec |
+| `.factory/PURPOSE.md` | Purpose, Measures, and Tests (created by bootstrap task) |
 | `.factory/PLANNING.md` | Planning agent instructions |
 | `.factory/EPILOGUE.md` | Project task epilogue template |
 | `.factory/agents/` | Agent persona definitions (markdown) |
@@ -78,8 +79,6 @@ Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each has YAML f
 
 | Condition | Passes when |
 |---|---|
-| `section_exists("text")` | text appears in `.factory/CLAUDE.md` |
-| `no_section("text")` | text does not appear in `.factory/CLAUDE.md` |
 | `file_exists("path")` | file exists in the worktree |
 | `file_absent("path")` | file does not exist |
 | `file_contains("path", "text")` | file exists and contains text |

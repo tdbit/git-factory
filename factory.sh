@@ -308,10 +308,6 @@ def update_task_meta(task, **kwargs):
 
 # --- completion checks ---
 
-def _read_claude_md():
-    p = ROOT / "CLAUDE.md"
-    return p.read_text() if p.exists() else ""
-
 def _glob_matches(base, pat):
     glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
     if any(ch in glob_pat for ch in "*?[]"):
@@ -336,11 +332,7 @@ def check_one_condition(cond, target_dir=None):
     except (ValueError, SyntaxError):
         log(f"check parse error: {cond}")
         return False
-    if func == "section_exists":
-        return args[0] in _read_claude_md()
-    elif func == "no_section":
-        return args[0] not in _read_claude_md()
-    elif func == "file_exists":
+    if func == "file_exists":
         return _glob_matches(base, args[0])
     elif func == "file_absent":
         return not _glob_matches(base, args[0])
@@ -884,6 +876,9 @@ Do not modify any files outside of these worktrees.
 
 When you complete tasks, your commits will be merged back to the source repo by the runner.
 
+Read \`PURPOSE.md\` for the factory's Purpose, Measures, and Tests — these
+define what "better" means for this codebase and guide all planning and work.
+
 ## How tasks work
 
 You are given one task at a time by the runner (\`factory.py\`). The task prompt
@@ -992,7 +987,7 @@ List 2–4 things explicitly excluded.
 
 How you know it's working. Observable signals — commands you can run, metrics
 you can check, behaviors you can demonstrate. Draw from Existential or
-Strategic Measures in CLAUDE.md. If you can't point to a specific measure,
+Strategic Measures in PURPOSE.md. If you can't point to a specific measure,
 the initiative isn't grounded.
 ```
 
@@ -1079,8 +1074,6 @@ Be specific and concrete. Name files, functions, and behaviors.
 Completion conditions checked by the runner after the agent finishes.
 One condition per line. All must pass. Supported conditions:
 
-- `section_exists("text")` — text appears in CLAUDE.md
-- `no_section("text")` — text does not appear in CLAUDE.md
 - `file_exists("path")` — file exists in the worktree
 - `file_absent("path")` — file does not exist
 - `file_contains("path", "text")` — file contains text
@@ -1135,7 +1128,7 @@ you run, work through these steps in order.
 
 # Before You Begin
 
-Read CLAUDE.md — specifically the Purpose, Measures, and Tests sections.
+Read PURPOSE.md — the Purpose, Measures, and Tests sections.
 
 The planning hierarchy maps to the purpose hierarchy:
 
@@ -1180,7 +1173,7 @@ Work top-down. Only create what is missing.
 - Write the Problem section by examining the actual codebase — run commands,
   read files, find concrete evidence.
 - The Outcome must connect to a specific Existential or Strategic Purpose bullet.
-- The Measures must draw from Existential or Strategic Measures in CLAUDE.md.
+- The Measures must draw from Existential or Strategic Measures in PURPOSE.md.
 - Create 1–3 backlog initiatives and activate exactly one, or promote a
   backlog initiative.
 
@@ -1298,8 +1291,8 @@ Read `CLAUDE.md` in this directory, then read the source repo's `CLAUDE.md`
 and `README.md` (if they exist). The source repo path is in the CLAUDE.md
 header.
 
-Your task is to add three sections to this worktree's CLAUDE.md: **Purpose**,
-**Measures**, and **Tests**.
+Your task is to create `PURPOSE.md` in this directory with three sections:
+**Purpose**, **Measures**, and **Tests**.
 
 Each section must include three levels of abstraction: **Existential**, **Strategic**, and **Tactical**.
 
@@ -1409,21 +1402,21 @@ the tactical purpose and measures directly. Examples:
 - Can a new contributor understand this change without extra context?
 - Does the error output tell the user what went wrong and what to do?
 
-After writing these sections, add them to this worktree's CLAUDE.md.
+Write these sections to `PURPOSE.md` (not CLAUDE.md).
 
 ## Done
 
-- `section_exists("## Purpose")`
+- `file_contains("PURPOSE.md", "## Purpose")`
 
 ## Context
 
 This is the bootstrap task. It creates the Purpose, Measures, and Tests
-sections that guide all future factory work. Without these sections, the
-agent has no way to evaluate whether a change is worthwhile.
+sections in PURPOSE.md that guide all future factory work. Without these
+sections, the agent has no way to evaluate whether a change is worthwhile.
 
 ## Verify
 
-- Confirm `CLAUDE.md` contains `## Purpose`, `## Measures`, and `## Tests`
+- Confirm `PURPOSE.md` contains `## Purpose`, `## Measures`, and `## Tests`
   sections with Existential, Strategic, and Tactical subsections.
 - Confirm each subsection has the right number of bullets (3-5 existential, 5-8 strategic, 5-10 tactical)
 - Read the sections back and check they are grounded in the actual repo, not
