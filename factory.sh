@@ -56,7 +56,7 @@ teardown() {
 
 # --- writer: python runner ---
 write_runner() {
-cat > "$FACTORY_DIR/$PY_NAME" <<'PY'
+cat > "$FACTORY_DIR/$PY_NAME" <<'RUNNER'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast, json, threading, atexit
 from pathlib import Path
@@ -856,7 +856,7 @@ def run():
 
 if __name__ == "__main__":
     run()
-PY
+RUNNER
 chmod +x "$FACTORY_DIR/$PY_NAME"
 }
 
