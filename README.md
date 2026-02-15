@@ -1,6 +1,81 @@
 # git-factory
 
-An autonomous software factory powered by AI coding agents. Drop `factory.sh` into any git repo, run it, and an agent bootstraps itself into an isolated `.factory/` directory where it continuously analyzes, plans, and improves the codebase.
+I am not an expert in software development or AI, but I am lucky to be
+surrounded by people who are.
+
+After talking to a few of them (mostly founders & technical friends) about their
+_Ralphs_ at dinner the other night, I thought I'd have a go at building one
+myself. That's what you're looking at. I wrote it[^1] partly to understand, partly
+out of curiosity and partly because I wanted to see what would happen if you
+mashed software agents together with a bit more philosophy[^2].
+
+The OG philosopher, Aristotle[^3], thought that if you want to understand
+something, you have to understand four things about it: What it is made of, how
+it is structured, where it came from, and _what it is for_. In software, the
+first three are usually clear enough. The fourth one is often a bit woolly.
+
+The Greeks had a word for this idea of what something is for, the idea of a
+purpose: telos, meaning the end state. Teleology is the study of that end state.  So I wanted to see what would happen if we applied some teleology[^4] to software
+agents. Proper telos. Something explicit. Something structured. Something they
+could keep referring back to as they worked.
+
+This repo, git-factory, is an attempt to see what happens.
+
+`git-factory` is basically a loop that asks, why are we doing this? And then
+keeps asking that question all the way down. Seriously, why are we doing this?
+To what end?
+
+**It's like the most vexatious co-worker you've ever had.**
+
+That's it. That's all it does.
+
+**Is it fast?**
+
+_No._
+
+**Is it safe?**
+
+_No._
+
+**Does it at least work?**
+
+_Also no._
+
+What it does, it does slowly, dangerously and unreliably. But (for me at
+least) it's interesting to watch and see how and why it fails.
+
+Like I said, this is an experiment.
+
+**Use it at your own risk.**
+
+Here's how:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/tdbit/git-factory/main/factory.sh
+bash factory.sh
+```
+
+N.B. You really should to check out [how it does that](#how-it-works) before you do.
+
+What you'll get (what you should get) is a bunch of branches, prefixed with
+`factory/`, that hopefully should have some bearing on improving your repo.  It
+takes a while but you can check out what's going on.
+
+Some of my design principles (see also Claude's longer [design decisions](#design-decisions)):
+- **MAG-stack** (markdown, AI & git) for life
+- **KISS AMIE** - keep it simple and make it easy
+- One file to rule them all
+- Quines are cool (this is not one so I'm calling it a QuAIne)
+- Don't touch people's stuff
+
+[^1]: For some loose definition of "write."
+[^2]: By philosophy I mostly mean very old ideas about purpose, not anything especially clever.
+[^3]: Socrates and Plato might dispute the branding.
+[^4]: Teleology, not eschatology (the end times). But who knows 🤷 😬
+
+---
+
+Drop `factory.sh` into any git repo, run it, and an AI agent bootstraps itself into an isolated `.factory/` directory where it continuously analyzes, plans, and improves the codebase.
 
 Supports **Claude Code** (`claude` / `claude-code`) and **Codex** (`codex`) — the first agent CLI found on `PATH` is used automatically.
 
@@ -53,6 +128,34 @@ your-repo/
     logs/               # agent run logs
     worktrees/          # source repo worktrees for project tasks
 ```
+
+## The philoshophy part (per Claude: The Teleogical Architecture)
+
+The core idea: an agent that knows *why* it's working makes better decisions than one that only knows *what* to do.
+
+### Purpose framework (the final cause)
+
+On first run, the agent reads your codebase and writes a three-level Purpose framework into `.factory/CLAUDE.md`:
+
+| Level | Question | Scope |
+|---|---|---|
+| **Existential** | Why does this software exist? | The real-world outcome for users |
+| **Strategic** | What improvements compound over time? | Medium-term direction and leverage |
+| **Tactical** | What specific friction exists right now? | Near-term, observable, grounded in code |
+
+Each level also gets **Measures** (how you know it's working) and **Tests** (questions to ask before committing). This is the agent's telos — it doesn't just have instructions, it has reasons.
+
+### Planning hierarchy
+
+Work is organized in three levels that map directly to the Purpose levels:
+
+| Planning level | Purpose level | What it addresses |
+|---|---|---|
+| **Initiative** | Existential / Strategic | The big gaps between current state and purpose |
+| **Project** | Strategic / Tactical | Scoped deliverables that compound |
+| **Task** | Tactical | Specific, near-term changes |
+
+Every initiative must trace to a Purpose bullet. Every project must advance an initiative. Every task must deliver a project artifact. The final cause propagates downward — a task that can't trace back to Purpose doesn't get created.
 
 ## Work hierarchy
 
@@ -167,7 +270,16 @@ Listed in the `## Done` section, one per line. All must pass.
 | `command("cmd")` | shell command exits 0 |
 | `always` | never completes (recurring task) |
 
-## Agents
+
+## TODO (these bits don't really work yet)
+
+### Hooks
+
+I was thinking it would be better if we had a pre-/post- commit hook that kicks of the planner but haven't fleshed that out.
+
+### Agents
+
+I thought we could have different agents for different tasks but really there's only one atm.  Right now (per Claude):
 
 Agent definitions live in `agents/` as markdown files with optional YAML frontmatter. They define a system prompt and tool permissions that are prepended to the task prompt when referenced via the `agent:` frontmatter field.
 
@@ -180,6 +292,14 @@ You are a security-focused reviewer. Analyze code for vulnerabilities...
 ```
 
 If no `agent:` field is set on a task, the default agent behavior is used.
+
+### Dashboard
+
+I thought it would cool to spin up a webserver and just pump the progress to that.  Keeping the file size managable meant I put that off.
+
+### Management commands
+
+I thought it would be cool if the `factory` command that got left behind could communicate with a background process managing the loop.
 
 ## Usage
 
@@ -227,21 +347,6 @@ All configuration is via environment variables — no config files.
 
 No other dependencies. Everything is self-contained in `factory.sh`.
 
-## How the agent operates
-
-The agent's behavior is defined by markdown files in `.factory/`:
-
-- **CLAUDE.md** — system overview, work model, lifecycle, scarcity invariants
-- **INITIATIVES.md** — initiative format spec
-- **PROJECTS.md** — project format spec (including Goals section)
-- **TASKS.md** — task format spec (frontmatter, completion conditions, sections)
-- **PLANNING.md** — planning agent instructions (read by the runner as a prompt)
-- **EPILOGUE.md** — appended to project task prompts (with `{project_dir}` substitution)
-
-After bootstrap, the agent's first task reads the source repo's `CLAUDE.md` and `README.md`, then writes Purpose, Measures, and Tests sections into `.factory/CLAUDE.md` that guide all future work.
-
-All instruction files are editable after bootstrap without re-extracting the runner.
-
 ## Design decisions
 
 - **Standalone factory repo** — `.factory/` is its own git repo for metadata. Project worktrees give the agent isolated branches in the source repo. Your working tree and branch are never touched.
@@ -253,3 +358,4 @@ All instruction files are editable after bootstrap without re-extracting the run
 - **Autonomous planning** — when no tasks are ready, the runner reads `PLANNING.md` and invokes a planning agent that creates the next task following scarcity invariants.
 - **Three-level work hierarchy** — initiatives, projects, and tasks provide structure without bureaucracy. Flat folders, frontmatter relationships, no nesting.
 - **Agent personas** — custom agent definitions in `agents/` let tasks run with specialized system prompts and tool permissions.
+- **Teleological grounding** — the Purpose framework gives the agent a final cause. Every piece of work traces back to *why*, not just *what*. This is the difference between an agent that produces commits and one that produces progress.
