@@ -685,9 +685,9 @@ def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log
 # --- task planning ---
 
 def plan_next_task():
-    planning_md = ROOT / "PLANNING.md"
+    planning_md = ROOT / "agents" / "PLANNER.md"
     if not planning_md.exists():
-        log("PLANNING.md not found")
+        log("agents/PLANNER.md not found")
         return False
     today = time.strftime("%Y-%m-%d")
     prompt = planning_md.read_text().replace("{today}", today)
@@ -727,6 +727,69 @@ def plan_next_task():
         log(f"planner finished (nothing to commit) \033[2m{info}\033[0m" if info else "planner finished (nothing to commit)")
     log("")
     return True
+
+def handle_failure(task, details):
+    """Run the planner with failure analysis context."""
+    failure_md = ROOT / "agents" / "FIXER.md"
+    if not failure_md.exists():
+        log("agents/FIXER.md not found — skipping failure review")
+        return
+    name = task["name"]
+    log(f"\033[31mfailure\033[0m review: {name}")
+
+    task_content = task["_path"].read_text()
+    run_log_path = STATE_DIR / "last_run.jsonl"
+    run_log_tail = ""
+    if run_log_path.exists():
+        lines = run_log_path.read_text().splitlines()
+        run_log_tail = "\n".join(lines[-50:])
+
+    condition_report = "\n".join(
+        f"  {'✓' if ok else '✗'} {cond}" for cond, ok in (details or [])
+    )
+
+    task_rel = task["_path"].relative_to(ROOT)
+    prompt = failure_md.read_text() + "\n\n"
+    prompt += f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
+    prompt += f"## Condition Results\n\n{condition_report}\n\n"
+    if run_log_tail:
+        prompt += f"## Run Log (last 50 lines)\n\n```\n{run_log_tail}\n```\n"
+
+    head_before = sh("git", "rev-parse", "HEAD")
+    run_log = _open_run_log("failure-review")
+    try:
+        ok, result = run_agent(prompt, run_log=run_log)
+    finally:
+        run_log.close()
+    if not ok:
+        log("  failure review crashed")
+        log("")
+        return
+    try:
+        head_after = sh("git", "rev-parse", "HEAD")
+        if head_after != head_before:
+            sh("git", "reset", "--soft", head_before)
+        sh("git", "add", "-A")
+        porcelain = sh("git", "status", "--porcelain")
+        info = format_result(result)
+        if not porcelain:
+            log(f"  no changes \033[2m{info}\033[0m" if info else "  no changes")
+            log("")
+            return
+        counts = {"initiatives": 0, "projects": 0, "tasks": 0}
+        for line in porcelain.splitlines():
+            path = line[3:]
+            for key in counts:
+                if path.startswith(key + "/"):
+                    counts[key] += 1
+        parts = [f"{n} {k}" for k, n in counts.items() if n]
+        msg = f"updated: {', '.join(parts)}" if parts else "updated"
+        sh("git", "commit", "-m", msg)
+        log(f"  → {msg} \033[2m{info}\033[0m" if info else f"  → {msg}")
+    except subprocess.CalledProcessError:
+        info = format_result(result)
+        log(f"  no changes \033[2m{info}\033[0m" if info else "  no changes")
+    log("")
 
 # --- main loop ---
 
@@ -857,7 +920,7 @@ def run():
             info = format_result(result)
             log(f"  ✓ conditions: passed \033[2m{info}\033[0m" if info else "  ✓ all conditions passed")
         else:
-            update_task_meta(task, status="suspended")
+            update_task_meta(task, status="stopped", stop_reason="incomplete")
             commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=commit_work_dir)
             info = format_result(result)
             log(f"  ✗ conditions: failed \033[2m{info}\033[0m" if info else "  ✗ conditions not met")
@@ -867,7 +930,8 @@ def run():
                     log(f"    {mark} {cond}")
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             log(f"  → task: {task['_path'].relative_to(ROOT)}")
-        log("")
+            log("")
+            handle_failure(task, details)
 
 if __name__ == "__main__":
     run()
@@ -1137,9 +1201,9 @@ the dependency order.
 TASKS
 }
 
-# --- writer: PLANNING.md ---
-write_planning_md() {
-cat > "$FACTORY_DIR/PLANNING.md" <<'PLANNING'
+# --- writer: agents/PLANNER.md ---
+write_planner_md() {
+cat > "$FACTORY_DIR/agents/PLANNER.md" <<'PLANNING'
 # Planning
 
 You are the factory's planning agent. You are invoked whenever there is no
@@ -1179,7 +1243,7 @@ Prune: mark stale or superseded items as `stopped` with
 Ignore completed and stopped items unless investigating regressions.
 
 **Failed tasks**: If any task has `stop_reason: failed` or was marked
-incomplete, follow the failure analysis protocol in `FAILURE.md` before
+incomplete, follow the failure analysis protocol in `agents/FIXER.md` before
 proceeding to Step 2. Do not skip this — the system must learn from every
 failure before creating new work.
 
@@ -1288,12 +1352,12 @@ at any time.
 
 Do NOT commit. The runner will commit your work.
 PLANNING
-sed -i '' "s|{source_repo}|$ROOT|g" "$FACTORY_DIR/PLANNING.md"
+sed -i '' "s|{source_repo}|$ROOT|g" "$FACTORY_DIR/agents/PLANNER.md"
 }
 
-# --- writer: FAILURE.md ---
-write_failure_md() {
-cat > "$FACTORY_DIR/FAILURE.md" <<'FAILURE'
+# --- writer: agents/FIXER.md ---
+write_fixer_md() {
+cat > "$FACTORY_DIR/agents/FIXER.md" <<'FAILURE'
 # Failure Analysis Protocol
 
 When you encounter a stopped task with `stop_reason: failed` or
@@ -1343,7 +1407,7 @@ The level determines the prescription's scope.
 
 Create a new task that closes the gap. The task must:
 
-- **Target a system file** — `factory.py`, `CLAUDE.md`, `PLANNING.md`,
+- **Target a system file** — `factory.py`, `CLAUDE.md`, `agents/PLANNER.md`,
   `TASKS.md`, or another factory-internal file. It does NOT redo the
   failed work.
 - **Strengthen the Measure or add the Test** — the fix must either make
@@ -1353,7 +1417,7 @@ Create a new task that closes the gap. The task must:
 - Include Done conditions that verify the system change, not the
   original deliverable.
 
-The failed task stays stopped. Do not reactivate it.
+The failed task stays stopped. Do not modify or reactivate it.
 
 ## Step 4: Retry
 
@@ -1653,8 +1717,8 @@ bootstrap() {
   write_initiatives_md
   write_projects_md
   write_tasks_md
-  write_planning_md
-  write_failure_md
+  write_planner_md
+  write_fixer_md
   write_epilogue_md
   write_bootstrap_task
   write_hook
