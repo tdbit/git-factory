@@ -267,7 +267,7 @@ def parse_task(path):
                 done_lines.append(line.strip('`'))
             elif line == "always" or line == "`always`":
                 done_lines.append("always")
-    name = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", path.stem)
+    name = path.stem
     return {
         "name": name,
         "tools": meta.get("tools", DEFAULT_TOOLS),
@@ -447,7 +447,7 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
     last_stderr = b""
     heartbeat_sec = float(os.environ.get("FACTORY_HEARTBEAT_SEC", "15"))
     for model_name in model_candidates:
-        log(f"agent provider: codex, model: {model_name}")
+        log(f"  → using: codex, model: {model_name}")
         proc = subprocess.Popen(
             [cli_path, "exec", "--model", model_name, "--sandbox", "workspace-write", "--json", full_prompt],
             stdout=subprocess.PIPE,
@@ -479,14 +479,14 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
             if etype == "item.started":
                 cmd = item.get("command") or ""
                 if cmd:
-                    _show_progress(f"\033[33mfactory:\033[0m \033[36m→ Run\033[0m \033[2m{cmd}\033[0m")
+                    _show_progress(f"\033[33mfactory:\033[0m \033[36m  → run:\033[0m \033[2m{cmd}\033[0m")
                 return
             if etype == "item.completed":
                 cmd = item.get("command") or ""
                 out = item.get("aggregated_output") or ""
                 exit_code = item.get("exit_code")
                 if cmd:
-                    prefix = "\033[36m✓ Run\033[0m" if exit_code == 0 else "\033[31m✗ Run\033[0m"
+                    prefix = "\033[36m✓ run\033[0m" if exit_code == 0 else "\033[31m✗ run\033[0m"
                     suffix = "" if exit_code == 0 else f" (exit {exit_code})"
                     log(f"{prefix} \033[2m{cmd}\033[0m{suffix}")
                 if out and exit_code != 0:
@@ -579,9 +579,9 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "").strip()
     if model_name:
         model_arg = ["--model", model_name]
-        log(f"agent provider: {cli_name or 'claude'}, model: {model_name}")
+        log(f"  → using: {cli_name or 'claude'}, model: {model_name}")
     else:
-        log(f"agent provider: {cli_name or 'claude'}, model: default")
+        log(f"  → using: {cli_name or 'claude'}, model: default")
 
     proc = subprocess.Popen(
         [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
@@ -637,12 +637,14 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
                         elif name == "Grep":
                             detail = inp.get("pattern", "")
                         elif name == "Bash":
-                            cmd = inp.get("command", "")
-                            detail = cmd[:120] + ("…" if len(cmd) > 120 else "")
+                            cmd = inp.get("command", "").splitlines()[0]
+                            maxw = shutil.get_terminal_size((80, 24)).columns - 22
+                            detail = cmd[:maxw] + ("…" if len(cmd) > maxw else "")
+                        lname = name.lower()
                         if detail:
-                            _show_progress(f"\033[33mfactory:\033[0m \033[36m→ {name}\033[0m \033[2m{detail}\033[0m")
+                            _show_progress(f"\033[33mfactory:\033[0m \033[36m  → {lname}:\033[0m \033[2m{detail}\033[0m")
                         else:
-                            _show_progress(f"\033[33mfactory:\033[0m \033[36m→ {name}\033[0m")
+                            _show_progress(f"\033[33mfactory:\033[0m \033[36m  → {lname}\033[0m")
             elif t == "result":
                 session_id = ev.get("session_id", session_id)
                 cost = ev.get("cost_usd") or ev.get("total_cost_usd")
@@ -653,7 +655,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
                 if cost:
                     parts.append(f"${cost:.4f}")
                 if parts:
-                    log("\033[2m" + ", ".join(parts) + "\033[0m")
+                    log(f"  → result: \033[2m{', '.join(parts)}\033[0m")
     reader = threading.Thread(target=read_stream, daemon=True)
     reader.start()
     start = time.monotonic()
@@ -697,9 +699,7 @@ def plan_next_task():
         return False
     today = time.strftime("%Y-%m-%d")
     prompt = planning_md.read_text().replace("{today}", today)
-    # snapshot existing task files before planning
-    before = set(f.name for f in TASKS_DIR.glob("*.md")) if TASKS_DIR.exists() else set()
-    log("planning next task")
+    log("planner started")
     run_log = _open_run_log("planning")
     try:
         ok, session_id = run_agent(prompt, run_log=run_log)
@@ -708,23 +708,22 @@ def plan_next_task():
     if not ok:
         log("planning failed")
         return False
-    # find new task files and commit with proper message
-    after = set(f.name for f in TASKS_DIR.glob("*.md")) if TASKS_DIR.exists() else set()
-    new_tasks = sorted(after - before)
     try:
         sh("git", "add", "-A")
-        if new_tasks:
-            name = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", Path(new_tasks[0]).stem)
-            sh("git", "commit", "-m", f"New Task: {name}")
-            log(f"task planned: {name}")
-        else:
-            # agent may have modified existing files without creating a new task
-            status = sh("git", "status", "--porcelain")
-            if status:
-                sh("git", "commit", "-m", "Planning update")
-            log("task planned")
+        porcelain = sh("git", "status", "--porcelain")
+        if not porcelain:
+            log("planner finished (nothing to commit)")
+            return True
+        sh("git", "commit", "-m", "Planning update")
+        plan_dirs = ("initiatives/", "projects/", "tasks/")
+        for line in porcelain.splitlines():
+            flag, _, path = line.strip().partition(" ")
+            path = path.strip()
+            if any(path.startswith(d) for d in plan_dirs):
+                action = "added" if flag in ("A", "?", "??") else "updated"
+                log(f"  → {action}: {path}")
     except subprocess.CalledProcessError:
-        log("task planned (nothing to commit)")
+        log("planner finished (nothing to commit)")
     return True
 
 # --- main loop ---
@@ -771,15 +770,16 @@ def run():
                 return
             continue
         name = task["name"]
-        log(f"starting task: {name}")
+        log(f"task started: {name}")
 
         # determine work directory: project worktree or factory worktree
         is_project_task = task["parent"].startswith("projects/")
         if is_project_task:
             work_dir = ensure_project_worktree(task["parent"])
-            log(f"project worktree: {work_dir}")
+            log(f"  → worktree: {Path(work_dir).name}")
         else:
             work_dir = ROOT
+            log("  → worktree: factory")
 
         update_task_meta(task, status="active", pid=str(os.getpid()))
         commit_task(task, f"Start Task: {name}")
@@ -812,7 +812,6 @@ def run():
             ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir, run_log=run_log)
         finally:
             run_log.close()
-        log(f"run log: {STATE_DIR / 'last_run.jsonl'}")
         if session_id:
             update_task_meta(task, session=session_id)
 
@@ -833,6 +832,7 @@ def run():
             update_task_meta(task, status="stopped", stop_reason="failed")
             commit_task(task, f"Failed Task: {name}")
             log(f"task crashed: {name}")
+            log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             return
         if not agent_committed:
             log("agent made no commits")
@@ -850,11 +850,11 @@ def run():
             commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=commit_work_dir)
             log(f"task failed: {name}")
             if details:
-                log("done conditions:")
                 for cond, ok in details:
                     mark = "✓" if ok else "✗"
                     log(f"  {mark} {cond}")
-            log(f"task file: {task['_path'].name}")
+            log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
+            log(f"  → task: {task['_path'].relative_to(ROOT)}")
             return
 
 if __name__ == "__main__":
