@@ -1562,7 +1562,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 FACTORY_DIR="${ROOT}/.factory"
 PY_NAME="factory.py"
 
-if [[ "${1:-}" == "destroy" ]]; then
+if [[ "${1:-}" == "teardown" ]]; then
   echo "This will permanently remove:"
   echo "  - All factory worktrees"
   echo "  - All factory/* branches"
@@ -1573,11 +1573,11 @@ if [[ "${1:-}" == "destroy" ]]; then
   printf "Type 'yes' to confirm: "
   read -r confirm
   if [[ "$confirm" != "yes" ]]; then
-    echo -e "\033[33mfactory:\033[0m destroy cancelled"
+    echo -e "\033[33mfactory:\033[0m teardown cancelled"
     exit 1
   fi
 
-  # restore factory.sh before destroying
+  # restore factory.sh before teardown
   if [[ -f "$FACTORY_DIR/factory.sh" ]]; then
     cp "$FACTORY_DIR/factory.sh" "$ROOT/factory.sh"
     echo -e "\033[33mfactory:\033[0m restored factory.sh"
@@ -1606,7 +1606,7 @@ if [[ "${1:-}" == "destroy" ]]; then
 
   # remove this launcher
   rm -f "$ROOT/factory"
-  echo -e "\033[33mfactory:\033[0m destroyed"
+  echo -e "\033[33mfactory:\033[0m teardown complete"
   exit 0
 fi
 

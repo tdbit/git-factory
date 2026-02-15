@@ -10,7 +10,7 @@ bash factory.sh [claude|codex]  # bootstrap with explicit provider
 ./factory                    # resume
 bash factory.sh dev          # reset + bootstrap + run (no launcher)
 bash factory.sh reset        # tear down only
-./factory destroy            # remove everything, restore factory.sh
+./factory teardown           # remove everything, restore factory.sh
 ```
 
 ## Architecture
