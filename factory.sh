@@ -899,8 +899,8 @@ Do not modify any files outside of these worktrees.
 
 When you complete tasks, your commits will be merged back to the source repo by the runner.
 
-Read \`PURPOSE.md\` for the factory's Purpose, Measures, and Tests — these
-define what "better" means for this codebase and guide all planning and work.
+Read \`$ROOT/PURPOSE.md\` for the source repo's Purpose, Measures, and Tests —
+these define what "better" means and guide all planning and work.
 
 ## How tasks work
 
@@ -1010,7 +1010,7 @@ List 2–4 things explicitly excluded.
 
 How you know it's working. Observable signals — commands you can run, metrics
 you can check, behaviors you can demonstrate. Draw from Existential or
-Strategic Measures in PURPOSE.md. If you can't point to a specific measure,
+Strategic Measures in the source repo's PURPOSE.md. If you can't point to a specific measure,
 the initiative isn't grounded.
 ```
 
@@ -1151,9 +1151,9 @@ you run, work through these steps in order.
 
 # Before You Begin
 
-Read PURPOSE.md — the Purpose, Measures, and Tests sections.
+Read `{source_repo}/PURPOSE.md` — the source repo's Purpose, Measures, and Tests.
 
-The planning hierarchy maps to the purpose hierarchy:
+The planning hierarchy maps to the source repo's purpose hierarchy:
 
 - **Initiatives** address Existential and Strategic purpose — the big gaps.
 - **Projects** deliver against Strategic and Tactical purpose — compounding work.
@@ -1178,6 +1178,11 @@ Prune: mark stale or superseded items as `stopped` with
 
 Ignore completed and stopped items unless investigating regressions.
 
+**Failed tasks**: If any task has `stop_reason: failed` or was marked
+incomplete, follow the failure analysis protocol in `FAILURE.md` before
+proceeding to Step 2. Do not skip this — the system must learn from every
+failure before creating new work.
+
 # Step 2: Complete
 
 Check whether finished work should cascade upward:
@@ -1196,7 +1201,7 @@ Work top-down. Only create what is missing.
 - Write the Problem section by examining the actual codebase — run commands,
   read files, find concrete evidence.
 - The Outcome must connect to a specific Existential or Strategic Purpose bullet.
-- The Measures must draw from Existential or Strategic Measures in PURPOSE.md.
+- The Measures must draw from Existential or Strategic Measures in the source repo's PURPOSE.md.
 - Create 1–3 backlog initiatives and activate exactly one, or promote a
   backlog initiative.
 
@@ -1283,6 +1288,95 @@ at any time.
 
 Do NOT commit. The runner will commit your work.
 PLANNING
+sed -i '' "s|{source_repo}|$ROOT|g" "$FACTORY_DIR/PLANNING.md"
+}
+
+# --- writer: FAILURE.md ---
+write_failure_md() {
+cat > "$FACTORY_DIR/FAILURE.md" <<'FAILURE'
+# Failure Analysis Protocol
+
+When you encounter a stopped task with `stop_reason: failed` or
+`stop_reason: incomplete`, follow this protocol **before** creating any new
+work. A failure is evidence that a factory Measure is not being met and a
+Test is missing or inadequate. Your job is to identify which ones and fix
+the system.
+
+Read `PURPOSE.md` before proceeding — every step below references
+the factory's own Purpose, Measures, and Tests.
+
+## Step 1: Observe
+
+Gather the facts:
+
+- Read the task file (its prompt, Done conditions, and Context).
+- Read the run log (`logs/`). What did the agent actually do?
+- Read the git diff of what the agent produced (if anything).
+- Note the delta between what was asked and what was delivered.
+
+## Step 2: Diagnose
+
+Identify which factory Measure was violated.
+
+Read the Measures in `PURPOSE.md`. The failure violated at least
+one — find it. Then ask: which Test should have caught this before the
+task ran (or while it ran), and why didn't it?
+
+- If no relevant Test exists, that is the gap.
+- If a Test exists but didn't catch the failure, the Test is inadequate.
+- If a Test caught it but the system ignored the result, the runner or
+  the instructions have a gap.
+
+Classify the level:
+
+- **Existential** — the factory cannot operate at all (runner crashes,
+  bootstrap fails, agent cannot start).
+- **Strategic** — the factory operates but systematically produces wrong
+  results (prompt construction drops context, format specs are ambiguous,
+  completion checks are weak).
+- **Tactical** — a specific task failed due to a narrow gap (missing
+  instruction, unclear constraint, edge case in a condition).
+
+The level determines the prescription's scope.
+
+## Step 3: Prescribe
+
+Create a new task that closes the gap. The task must:
+
+- **Target a system file** — `factory.py`, `CLAUDE.md`, `PLANNING.md`,
+  `TASKS.md`, or another factory-internal file. It does NOT redo the
+  failed work.
+- **Strengthen the Measure or add the Test** — the fix must either make
+  the violated Measure enforceable or add/fix the Test that should have
+  caught the failure. Connect the fix to a specific bullet in
+  `PURPOSE.md`.
+- Include Done conditions that verify the system change, not the
+  original deliverable.
+
+The failed task stays stopped. Do not reactivate it.
+
+## Step 4: Retry
+
+After the systemic fix task completes, create a **new** task for the
+original work (or an adjusted version if the failure revealed that the
+original task was itself flawed). The new task benefits from the system
+improvement and should not hit the same failure mode.
+
+## Anti-Patterns
+
+- **Retrying without diagnosing**: reactivating or duplicating the failed
+  task without changing anything. The same system will produce the same
+  failure.
+- **Symptomatic fixes**: "add a note to the task telling the agent to read
+  the conditions." This puts the burden on the task author instead of on
+  the system. If an agent can ignore an instruction, the system has no
+  enforcement — fix the system.
+- **Skipping observation**: jumping to a theory without reading the log
+  and diff. You cannot diagnose what you haven't observed.
+- **Unmeasured fixes**: creating a fix task that doesn't trace to a
+  specific Measure or Test in `PURPOSE.md`. If you can't name the
+  Measure, you haven't diagnosed the failure.
+FAILURE
 }
 
 # --- writer: EPILOGUE.md ---
@@ -1303,19 +1397,22 @@ When you are done:
 EPILOGUE
 }
 
-# --- writer: bootstrap task ---
+# --- writer: bootstrap tasks ---
 write_bootstrap_task() {
-cat > "$FACTORY_DIR/tasks/$(date +%Y-%m-%d)-define-purpose.md" <<'TASK'
+local TODAY="$(date +%Y-%m-%d)"
+local FACTORY_TASK="$FACTORY_DIR/tasks/${TODAY}-define-factory-purpose.md"
+local REPO_TASK="$FACTORY_DIR/tasks/${TODAY}-define-repo-purpose.md"
+
+cat > "$FACTORY_TASK" <<'TASK'
 ---
 tools: Read,Write,Edit,Bash
 ---
 
-Read `CLAUDE.md` in this directory, then read the source repo's `CLAUDE.md`
-and `README.md` (if they exist). The source repo path is in the CLAUDE.md
-header.
+Examine this repository. Read its key files to understand what this software
+does, how it is structured, and where its friction is.
 
-Your task is to create `PURPOSE.md` in this directory with three sections:
-**Purpose**, **Measures**, and **Tests**.
+Create `PURPOSE.md` in this directory with three sections: **Purpose**,
+**Measures**, and **Tests**.
 
 Each section must include three levels of abstraction: **Existential**, **Strategic**, and **Tactical**.
 
@@ -1425,26 +1522,29 @@ the tactical purpose and measures directly. Examples:
 - Can a new contributor understand this change without extra context?
 - Does the error output tell the user what went wrong and what to do?
 
-Write these sections to `PURPOSE.md` (not CLAUDE.md).
-
 ## Done
 
 - `file_contains("PURPOSE.md", "## Purpose")`
-
-## Context
-
-This is the bootstrap task. It creates the Purpose, Measures, and Tests
-sections in PURPOSE.md that guide all future factory work. Without these
-sections, the agent has no way to evaluate whether a change is worthwhile.
 
 ## Verify
 
 - Confirm `PURPOSE.md` contains `## Purpose`, `## Measures`, and `## Tests`
   sections with Existential, Strategic, and Tactical subsections.
-- Confirm each subsection has the right number of bullets (3-5 existential, 5-8 strategic, 5-10 tactical)
+- Confirm each subsection has the right number of bullets (3-5 existential, 5-8 strategic, 5-10 tactical).
 - Read the sections back and check they are grounded in the actual repo, not
   generic platitudes.
 TASK
+
+# Task 2: same template, different repo
+cp "$FACTORY_TASK" "$REPO_TASK"
+sed -i '' \
+  -e '/^tools:/a\
+previous: '"${TODAY}"'-define-factory-purpose.md' \
+  -e "s|Examine this repository|Examine the source repository at \`$ROOT\`|" \
+  -e "s|in this directory|in the source repo root (\`$ROOT/\`)|" \
+  -e "s|file_contains(\"PURPOSE.md\"|file_contains(\"$ROOT/PURPOSE.md\"|" \
+  -e "s|Confirm \`PURPOSE.md\`|Confirm \`$ROOT/PURPOSE.md\`|" \
+  "$REPO_TASK"
 }
 
 # --- writer: ./factory launcher ---
@@ -1547,6 +1647,7 @@ bootstrap() {
   write_projects_md
   write_tasks_md
   write_planning_md
+  write_failure_md
   write_epilogue_md
   write_bootstrap_task
   write_hook
