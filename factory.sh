@@ -702,14 +702,16 @@ def plan_next_task():
         if not porcelain:
             log("planner finished (nothing to commit)")
             return True
-        sh("git", "commit", "-m", "Planning update")
-        plan_dirs = ("initiatives/", "projects/", "tasks/")
+        counts = {"initiatives": 0, "projects": 0, "tasks": 0}
         for line in porcelain.splitlines():
-            flag, _, path = line.strip().partition(" ")
-            path = path.strip()
-            if any(path.startswith(d) for d in plan_dirs):
-                action = "added" if flag in ("A", "?", "??") else "updated"
-                log(f"  → {action}: {path}")
+            path = line[3:]
+            for key in counts:
+                if path.startswith(key + "/"):
+                    counts[key] += 1
+        parts = [f"{n} {k}" for k, n in counts.items() if n]
+        msg = f"Update plans: {', '.join(parts)}" if parts else "Update plans"
+        sh("git", "commit", "-m", msg)
+        log(f"  → {msg}")
     except subprocess.CalledProcessError:
         log("planner finished (nothing to commit)")
     return True
