@@ -968,8 +968,34 @@ achieve. Each initiative is a markdown file in `initiatives/` named
 status: backlog
 ---
 
-What this initiative aims to achieve and why.
+## Problem
+
+What's wrong now. What friction, gap, or limitation exists in the codebase.
+Ground this in what you observe — name files, modules, workflows, user pain.
+Not "testing could be better" — what specifically is broken or missing.
+
+## Outcome
+
+What's true when this initiative succeeds. Describe the end state, not the
+work. Connect to Purpose (Existential or Strategic level).
+
+Not "we will add tests" — "developers can refactor core modules confidently
+because every public interface has contract tests."
+
+## Scope
+
+What's in and what's out. Initiatives without boundaries expand forever.
+List 2–4 things explicitly excluded.
+
+## Measures
+
+How you know it's working. Observable signals — commands you can run, metrics
+you can check, behaviors you can demonstrate. Connect to the Measures framework
+in CLAUDE.md.
 ```
+
+All four sections are required. An initiative that can't fill them isn't ready
+to be created.
 
 ## Frontmatter
 
@@ -985,10 +1011,6 @@ cat > "$FACTORY_DIR/PROJECTS.md" <<'PROJECTS'
 Projects are scoped deliverables that advance an initiative. Each project is a
 markdown file in `projects/` named `YYYY-MM-slug.md`.
 
-A project should be well-specced: clear goals, concrete deliverables, and an
-explanation of how it supports the parent initiative and relates to sibling
-projects.
-
 ## Format
 
 ```markdown
@@ -997,12 +1019,28 @@ status: backlog
 parent: initiatives/YYYY-slug.md
 ---
 
-What this project delivers and how it advances the parent initiative.
+How this project advances the parent initiative. What slice of the initiative's
+problem space it addresses. How it relates to sibling projects (if any).
 
-## Goals
+## Deliverables
 
-Concrete outcomes that define "done" for this project.
+Specific artifacts that will exist when this project is done. Not goals —
+things. Files, behaviors, capabilities, removed code. Each deliverable is a
+noun phrase that either exists or doesn't.
+
+## Acceptance
+
+Testable criteria — one per deliverable. Each answers "how do I verify this
+deliverable is done?" These map directly to task Done conditions.
+
+## Scope
+
+What this project covers and what it explicitly does not. If the initiative
+has multiple projects, explain the boundary between this one and its siblings.
 ```
+
+All sections are required. A project without concrete deliverables and testable
+acceptance criteria isn't ready to be created.
 
 ## Frontmatter
 
@@ -1091,15 +1129,25 @@ specs.
 Your job is to **review progress** and **ensure work is ready**. Every time
 you run, work through these steps in order.
 
+# Before You Begin
+
+Read CLAUDE.md — specifically the Purpose, Measures, and Tests sections. Every
+initiative must trace to Purpose. Every project must advance an initiative.
+Every task must deliver a project artifact. If you can't draw the line from a
+piece of work back to Purpose, don't create it.
+
 # Step 1: Assess
 
-Read all active and backlog items across all three levels. Ask:
+Read all active and backlog items across all three levels. For each active
+item, ask:
 
-- What is the active initiative? Are its projects making progress?
-- What is the active project? Are its tasks still relevant given what has
-  been completed so far?
-- Are any backlog tasks stale or superseded? If so, mark them `stopped`
-  with `stop_reason: superseded`.
+- Is it still the highest-leverage work available?
+- Is it making progress, or is it stuck?
+- Has completed work changed what's most important?
+- Are any backlog items now more urgent than active ones?
+
+Prune: mark stale or superseded items as `stopped` with
+`stop_reason: superseded`.
 
 Ignore completed and stopped items unless investigating regressions.
 
@@ -1116,19 +1164,32 @@ Check whether finished work should cascade upward:
 Work top-down. Only create what is missing.
 
 **Initiatives** — If no active initiative exists:
-- Promote a backlog initiative, or create 1–3 backlog initiatives and
-  activate exactly one.
+- Read Purpose (all three levels). Identify the highest-leverage gap between
+  current state and Purpose.
+- Write the Problem section by examining the actual codebase — run commands,
+  read files, find concrete evidence.
+- The Outcome must connect to a specific Purpose bullet.
+- The Measures must be observable (commands, metrics, demonstrations).
+- Create 1–3 backlog initiatives and activate exactly one, or promote a
+  backlog initiative.
 
 **Projects** — If the active initiative has no active project:
-- Promote a backlog project, or create all the projects the initiative
-  needs (as many as appropriate — could be 1, could be 12). Each project
-  should be well-specced with clear goals and an explanation of how it
-  supports the initiative and relates to sibling projects. Activate 1–2.
+- Read the initiative's Problem and Outcome. Decompose into independent,
+  shippable slices — each project should deliver value on its own, not
+  depend on other projects completing first.
+- Write Deliverables as noun phrases (files, behaviors, capabilities).
+- Write Acceptance criteria that map to Done conditions the runner can check.
+- Order projects by leverage — activate the one that unblocks the most.
+- Create all the projects the initiative needs (as many as appropriate —
+  could be 1, could be 12). Activate 1–2.
 
 **Tasks** — If the active project has no ready tasks:
-- Read the project's goals. Create all the tasks needed to complete the
-  project, with `previous` chains defining execution order. Each task
-  should be atomic and completable in one session. Activate exactly one.
+- Read the project's Deliverables and Acceptance. Each task produces one
+  deliverable or a clear fraction of one.
+- Task prompts must name specific files, functions, and behaviors.
+- Done conditions must be strict and automatable.
+- Chain tasks with `previous` when order matters.
+- Create all the tasks needed to complete the project. Activate exactly one.
 - Today's date is {today}. Name task files `{today}-slug.md`. If creating
   multiple tasks for the same day, vary the slug.
 
@@ -1139,6 +1200,31 @@ Before finishing, confirm:
 - Scarcity invariants hold (see below).
 - At least one task is ready to run (active, unblocked, conditions unmet).
 - If not, something went wrong — investigate and fix.
+- Quality gate — for every active item, answer:
+  - Can I trace it back to a Purpose bullet?
+  - Does it have concrete, testable success criteria?
+  - Is it the highest-leverage thing at its level?
+  - Would I be embarrassed if a senior engineer reviewed it?
+
+# Anti-Patterns
+
+Do NOT do these:
+
+- **Vague initiatives**: "Improve code quality" — no problem statement, no
+  measures. Every initiative needs a specific Problem grounded in the codebase.
+- **Kitchen-sink projects**: project tries to do everything the initiative
+  needs in one shot. Decompose into independent, shippable slices.
+- **Aspirational deliverables**: "Better test coverage" is not a deliverable;
+  "Unit tests for auth module (auth/*.test.ts)" is.
+- **Untestable acceptance**: "Code is cleaner" — how do you check that?
+  Acceptance criteria must map to Done conditions.
+- **Busywork tasks**: tasks that produce change but don't advance a
+  deliverable. Every task must trace back to a project artifact.
+- **Over-planning**: creating 20 backlog tasks when 5 would cover the project.
+  Plan enough to maintain flow, not to predict the future.
+- **Copy-paste structure**: every initiative looks the same because you are
+  pattern-matching instead of thinking. Each initiative addresses a different
+  problem — the structure should reflect that.
 
 # Scarcity Invariants
 
@@ -1230,15 +1316,24 @@ automation system: "Routine decisions happen without human intervention." Keep
 it concrete and tied to the people or problem the software serves. Do not
 describe the character of the codebase here — that belongs in strategic purpose.
 
-**Strategic Purpose** (5-8 bullets) — Define medium-term direction tied to
-what you observe in the repo. Examples: reduce complexity in core paths,
-improve developer ergonomics, prefer explicitness over magic, strengthen
-invariants and contracts, eliminate sources of brittleness.
+**Strategic Purpose** (5-8 bullets) — Define what properties this codebase
+must have to keep fulfilling its existential purpose over time. Each bullet
+should connect a codebase quality to the real-world outcome it protects. Not
+"reduce complexity in core paths" — "complexity in core paths makes it unsafe
+to change behavior users depend on." Not "improve test coverage" — "untested
+interfaces erode confidence in the changes that deliver [existential purpose]."
+The question is always: why does this property matter for the people or problem
+the software serves?
 
-**Tactical Purpose** (5-10 bullets) — Define immediate, repo-specific
-priorities. Be concrete and name areas of the repo. Examples: simplify a
-confusing module, remove dead code, reduce test flakiness, improve error
-messages, clarify public APIs, reduce steps to run locally.
+**Tactical Purpose** (5-10 bullets) — Define what specific friction in this
+codebase currently undermines the existential or strategic purpose, and why it
+matters now. Name real files, modules, or workflows. Each bullet should connect
+observable friction to the purpose it harms. Not "simplify the config module" —
+"the config module's indirection obscures what the system actually does,
+undermining [strategic purpose bullet]." Not "reduce test flakiness" —
+"flaky tests in X cause developers to ignore failures, eroding [strategic
+purpose bullet]." The question is always: why does this specific area need
+attention, traced back to purpose?
 
 ---
 
