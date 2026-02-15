@@ -977,7 +977,8 @@ Not "testing could be better" — what specifically is broken or missing.
 ## Outcome
 
 What's true when this initiative succeeds. Describe the end state, not the
-work. Connect to Purpose (Existential or Strategic level).
+work. Connect to Existential or Strategic Purpose — which bullet does this
+advance?
 
 Not "we will add tests" — "developers can refactor core modules confidently
 because every public interface has contract tests."
@@ -990,8 +991,9 @@ List 2–4 things explicitly excluded.
 ## Measures
 
 How you know it's working. Observable signals — commands you can run, metrics
-you can check, behaviors you can demonstrate. Connect to the Measures framework
-in CLAUDE.md.
+you can check, behaviors you can demonstrate. Draw from Existential or
+Strategic Measures in CLAUDE.md. If you can't point to a specific measure,
+the initiative isn't grounded.
 ```
 
 All four sections are required. An initiative that can't fill them isn't ready
@@ -1020,7 +1022,8 @@ parent: initiatives/YYYY-slug.md
 ---
 
 How this project advances the parent initiative. What slice of the initiative's
-problem space it addresses. How it relates to sibling projects (if any).
+problem space it addresses. Which Strategic or Tactical Purpose bullets it
+serves. How it relates to sibling projects (if any).
 
 ## Deliverables
 
@@ -1031,7 +1034,8 @@ noun phrase that either exists or doesn't.
 ## Acceptance
 
 Testable criteria — one per deliverable. Each answers "how do I verify this
-deliverable is done?" These map directly to task Done conditions.
+deliverable is done?" These map directly to task Done conditions and should
+connect to Strategic or Tactical Measures.
 
 ## Scope
 
@@ -1131,8 +1135,15 @@ you run, work through these steps in order.
 
 # Before You Begin
 
-Read CLAUDE.md — specifically the Purpose, Measures, and Tests sections. Every
-initiative must trace to Purpose. Every project must advance an initiative.
+Read CLAUDE.md — specifically the Purpose, Measures, and Tests sections.
+
+The planning hierarchy maps to the purpose hierarchy:
+
+- **Initiatives** address Existential and Strategic purpose — the big gaps.
+- **Projects** deliver against Strategic and Tactical purpose — compounding work.
+- **Tasks** execute Tactical purpose — specific, near-term changes.
+
+Every initiative must trace to Purpose. Every project must advance an initiative.
 Every task must deliver a project artifact. If you can't draw the line from a
 piece of work back to Purpose, don't create it.
 
@@ -1168,8 +1179,8 @@ Work top-down. Only create what is missing.
   current state and Purpose.
 - Write the Problem section by examining the actual codebase — run commands,
   read files, find concrete evidence.
-- The Outcome must connect to a specific Purpose bullet.
-- The Measures must be observable (commands, metrics, demonstrations).
+- The Outcome must connect to a specific Existential or Strategic Purpose bullet.
+- The Measures must draw from Existential or Strategic Measures in CLAUDE.md.
 - Create 1–3 backlog initiatives and activate exactly one, or promote a
   backlog initiative.
 
@@ -1179,6 +1190,8 @@ Work top-down. Only create what is missing.
   depend on other projects completing first.
 - Write Deliverables as noun phrases (files, behaviors, capabilities).
 - Write Acceptance criteria that map to Done conditions the runner can check.
+- Each project's deliverables should advance Strategic or Tactical Purpose.
+- Acceptance criteria should connect to Strategic or Tactical Measures.
 - Order projects by leverage — activate the one that unblocks the most.
 - Create all the projects the initiative needs (as many as appropriate —
   could be 1, could be 12). Activate 1–2.
@@ -1188,6 +1201,7 @@ Work top-down. Only create what is missing.
   deliverable or a clear fraction of one.
 - Task prompts must name specific files, functions, and behaviors.
 - Done conditions must be strict and automatable.
+- Done conditions should be verifiable against Tactical Measures where possible.
 - Chain tasks with `previous` when order matters.
 - Create all the tasks needed to complete the project. Activate exactly one.
 - Today's date is {today}. Name task files `{today}-slug.md`. If creating
@@ -1201,7 +1215,8 @@ Before finishing, confirm:
 - At least one task is ready to run (active, unblocked, conditions unmet).
 - If not, something went wrong — investigate and fix.
 - Quality gate — for every active item, answer:
-  - Can I trace it back to a Purpose bullet?
+  - Can I trace it to a specific Purpose bullet at the right level?
+    (Initiative → Existential/Strategic, Project → Strategic/Tactical, Task → Tactical)
   - Does it have concrete, testable success criteria?
   - Is it the highest-leverage thing at its level?
   - Would I be embarrassed if a senior engineer reviewed it?
