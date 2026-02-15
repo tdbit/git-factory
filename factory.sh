@@ -51,6 +51,7 @@ teardown() {
   git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
     git branch -D "$b" >/dev/null 2>&1 || true
   done
+  rm -f "$ROOT/PURPOSE.md"
   rm -f "$ROOT/factory"
 }
 
@@ -1659,31 +1660,7 @@ if [[ "${1:-}" == "teardown" ]]; then
     echo -e "\033[33mfactory:\033[0m restored factory.sh"
   fi
 
-  # remove project worktrees (source repo worktrees)
-  if [[ -d "$FACTORY_DIR/worktrees" ]]; then
-    printf "\033[33mfactory:\033[0m removing worktrees..."
-    for wt in "$FACTORY_DIR/worktrees"/*/; do
-      [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-    done
-    printf "\r\033[33mfactory:\033[0m removed worktrees   \n"
-  fi
-
-  rm -rf "$FACTORY_DIR"
-  echo -e "\033[33mfactory:\033[0m removed .factory/"
-
-  # delete factory/* project branches
-  git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
-    git branch -D "$b" >/dev/null 2>&1 || true
-    echo -e "\033[33mfactory:\033[0m deleted '$b' branch"
-  done
-
-  # remove source repo PURPOSE.md
-  rm -f "$ROOT/PURPOSE.md"
-
-  # remove this launcher
-  rm -f "$ROOT/factory"
-  echo -e "\033[33mfactory:\033[0m teardown complete"
-  exit 0
+  exec bash "$ROOT/factory.sh" teardown
 fi
 
 cd "$FACTORY_DIR"
@@ -1755,9 +1732,9 @@ bootstrap() {
 
 # --- handle commands ---
 case "${1:-}" in
-  reset)
+  teardown)
     teardown
-    echo -e "\033[33mfactory:\033[0m reset"
+    echo -e "\033[33mfactory:\033[0m teardown complete"
     exit 0
     ;;
   dump)
@@ -1781,7 +1758,7 @@ case "${1:-}" in
       echo "commands:"
       echo "   [claude|codex]   bootstrap or resume with specified provider (default: $PROVIDER)"
       echo "   dump             write all factory files to ./factory_dump/"
-      echo "   reset            tear down .factory/, worktrees, and factory/* branches"
+      echo "   teardown         tear down .factory/, worktrees, and factory/* branches"
       echo "   help             display this help message"
       exit 0
       ;;
