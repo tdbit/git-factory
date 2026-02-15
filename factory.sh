@@ -179,23 +179,32 @@ def get_agent_cli():
 
 # --- helpers ---
 
-def load_agent(name):
-    """Load an agent definition from agents/{name}.md."""
-    path = AGENTS_DIR / f"{name}.md"
-    if not path.exists():
-        return None
-    text = path.read_text()
+def _parse_frontmatter(text):
+    """Split text into (meta_dict, body_string) or None if no valid frontmatter."""
     if not text.startswith("---"):
-        return {"name": name, "prompt": text, "tools": DEFAULT_TOOLS}
+        return None
     parts = text.split("---", 2)
     if len(parts) < 3:
-        return {"name": name, "prompt": text, "tools": DEFAULT_TOOLS}
+        return None
     _, fm, body = parts
     meta = {}
     for line in fm.strip().splitlines():
         key, _, val = line.partition(":")
         if key.strip():
             meta[key.strip()] = val.strip()
+    return meta, body
+
+
+def load_agent(name):
+    """Load an agent definition from agents/{name}.md."""
+    path = AGENTS_DIR / f"{name}.md"
+    if not path.exists():
+        return None
+    text = path.read_text()
+    parsed = _parse_frontmatter(text)
+    if not parsed:
+        return {"name": name, "prompt": text, "tools": DEFAULT_TOOLS}
+    meta, body = parsed
     return {
         "name": name,
         "prompt": body.strip(),
@@ -207,19 +216,11 @@ def load_agent(name):
 
 def parse_task(path):
     text = path.read_text()
-    if not text.startswith("---"):
-        log(f"skipping {path.name}: no frontmatter")
+    parsed = _parse_frontmatter(text)
+    if not parsed:
+        log(f"skipping {path.name}: no/malformed frontmatter")
         return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        log(f"skipping {path.name}: malformed frontmatter")
-        return None
-    _, fm, body = parts
-    meta = {}
-    for line in fm.strip().splitlines():
-        key, _, val = line.partition(":")
-        if key.strip():
-            meta[key.strip()] = val.strip()
+    meta, body = parsed
     # parse sections from body
     sections = {}
     current_section = None
@@ -245,8 +246,8 @@ def parse_task(path):
             line = line.strip().lstrip("- ")
             if line and re.match(r'`?(\w+)\(', line):
                 done_lines.append(line.strip('`'))
-            elif line == "always" or line == "`always`":
-                done_lines.append("always")
+            elif line == "never" or line == "`never`":
+                done_lines.append("never")
     name = path.stem
     return {
         "name": name,
@@ -297,7 +298,7 @@ def _glob_matches(base, pat):
 
 def check_one_condition(cond, target_dir=None):
     base = target_dir or ROOT
-    if not cond or cond == "always":
+    if not cond or cond == "never":
         return False
     m = re.match(r'(\w+)\((.+)\)$', cond)
     if not m:
@@ -835,7 +836,7 @@ def run():
         prompt = "\n\n".join(prompt_parts)
 
         # surface done conditions so the agent knows exact acceptance criteria
-        if task["done"] and task["done"] != ["always"]:
+        if task["done"] and task["done"] != ["never"]:
             checklist = "\n".join(f"- `{c}`" for c in task["done"])
             prompt += f"\n\n## Acceptance Criteria\n\nYour work is verified by these exact conditions — file paths and names must match precisely:\n\n{checklist}"
 
@@ -1152,7 +1153,7 @@ One condition per line. All must pass. Supported conditions:
 - `file_contains("path", "text")` — file contains text
 - `file_missing_text("path", "text")` — file missing or lacks text
 - `command("cmd")` — shell command exits 0
-- `always` — task never completes (recurring)
+- `never` — task never completes (recurring)
 
 ## Context
 
