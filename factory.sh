@@ -6,15 +6,17 @@ set -euo pipefail
 
 # --- constants ---
 NOISES="Clanging Bing-banging Grinding Ka-chunking Ratcheting Hammering Whirring Pressing Stamping Riveting Welding Bolting Torqueing Clatter-clanking Thudding Shearing Punching Forging Sparking Sizzling Honing Milling Buffing Tempering Ka-thunking"
-ROOT="$(git rev-parse --show-toplevel)"
-FACTORY_DIR="${ROOT}/.factory"
+SOURCE_DIR="$(git rev-parse --show-toplevel)"
+FACTORY_DIR="${SOURCE_DIR}/.factory"
 PROJECT_WORKTREES="${FACTORY_DIR}/worktrees"
 PY_NAME="factory.py"
-EXCLUDE_FILE="$ROOT/.git/info/exclude"
+EXCLUDE_FILE="$SOURCE_DIR/.git/info/exclude"
 
-# --- detect provider ---
+# --- detect provider and options ---
 PROVIDER=""
 case "${1:-}" in claude|codex) PROVIDER="$1"; shift ;; esac
+KEEP_SCRIPT=false
+case "${1:-}" in --keep-script) KEEP_SCRIPT=true; shift ;; esac
 if [[ -z "$PROVIDER" ]]; then
   for try in claude claude-code codex; do
     command -v "$try" >/dev/null 2>&1 && PROVIDER="$try" && break
@@ -32,29 +34,6 @@ done
 # --- check dependencies ---
 [[ -n "$PROVIDER" ]] || { echo -e "\033[31mfactory:\033[0m error: no agent CLI found (tried: claude, claude-code, codex)" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo -e "\033[31mfactory:\033[0m error: python3 is not installed." >&2; exit 1; }
-
-# --- tear down .factory/, worktrees, and factory/* branches ---
-teardown() {
-  if [[ -z "$FACTORY_DIR" ]] || [[ "$FACTORY_DIR" != *".factory" ]]; then
-    echo -e "\033[31mfactory:\033[0m error: unsafe FACTORY_DIR: $FACTORY_DIR" >&2
-    exit 1
-  fi
-
-  if [[ -d "$FACTORY_DIR/worktrees" ]]; then
-    for wt in "$FACTORY_DIR/worktrees"/*/; do
-      [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-    done
-  fi
-
-  rm -rf "$FACTORY_DIR"
-
-  git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
-    git branch -D "$b" >/dev/null 2>&1 || true
-  done
-  rm -f "$ROOT/PURPOSE.md"
-  rm -f "$ROOT/factory"
-}
-
 # --- writer: python runner ---
 write_runner() {
 cat > "$1/$PY_NAME" <<'RUNNER'
@@ -943,13 +922,13 @@ chmod +x "$FACTORY_DIR/$PY_NAME"
 
 # --- writer: CLAUDE.md ---
 write_claude_md() {
-local REPO="$(basename "$ROOT")"
+local REPO="$(basename "$SOURCE_DIR")"
 cat > "$1/CLAUDE.md" <<CLAUDE
 # Factory
 
 Automated software factory for \`$REPO\`.
 
-Source repo: \`$ROOT\`
+Source repo: \`$SOURCE_DIR\`
 Factory dir: \`$FACTORY_DIR\`
 
 You are a coding agent operating inside \`.factory/\`, a standalone git repo that
@@ -965,7 +944,7 @@ Do not modify any files outside of these worktrees.
 
 When you complete tasks, your commits will be merged back to the source repo by the runner.
 
-Read \`$ROOT/PURPOSE.md\` for the source repo's Purpose, Measures, and Tests —
+Read \`$SOURCE_DIR/PURPOSE.md\` for the source repo's Purpose, Measures, and Tests —
 these define what "better" means and guide all planning and work.
 
 ## How tasks work
@@ -1154,7 +1133,7 @@ them one at a time, and checks their completion conditions.
 
 ```markdown
 ---
-tools: Read,Write,Edit,Bash
+tools: Read,Write,Edit,Glob,Grep
 author: planner
 parent: projects/name.md
 previous: YYYY-MM-DD-other-task.md
@@ -1361,7 +1340,7 @@ at any time.
 
 Do NOT commit. The runner will commit your work.
 PLANNING
-sed -i '' "s|{source_repo}|$ROOT|g" "$1/PLANNER.md"
+sed -i '' "s|{source_repo}|$SOURCE_DIR|g" "$1/PLANNER.md"
 }
 
 # --- writer: agents/FIXER.md ---
@@ -1479,7 +1458,7 @@ local REPO_TASK="$1/${TODAY}-define-repo-purpose.md"
 
 cat > "$FACTORY_TASK" <<'TASK'
 ---
-tools: Read,Write,Edit,Bash
+tools: Read,Write,Edit,Glob,Grep
 author: factory
 ---
 
@@ -1617,59 +1596,30 @@ cp "$FACTORY_TASK" "$REPO_TASK"
 sed -i '' \
   -e '/^tools:/a\
 previous: '"${TODAY}"'-define-factory-purpose.md' \
-  -e "s|Examine this repository|Examine the source repository at \`$ROOT\`|" \
-  -e "s|in this directory|in the source repo root (\`$ROOT/\`)|" \
-  -e "s|file_contains(\"PURPOSE.md\"|file_contains(\"$ROOT/PURPOSE.md\"|" \
-  -e "s|Confirm \`PURPOSE.md\`|Confirm \`$ROOT/PURPOSE.md\`|" \
+  -e "s|Examine this repository|Examine the source repository at \`$SOURCE_DIR\`|" \
+  -e "s|in this directory|in the source repo root (\`$SOURCE_DIR/\`)|" \
+  -e "s|file_contains(\"PURPOSE.md\"|file_contains(\"$SOURCE_DIR/PURPOSE.md\"|" \
+  -e "s|Confirm \`PURPOSE.md\`|Confirm \`$SOURCE_DIR/PURPOSE.md\`|" \
   "$REPO_TASK"
 }
 
 # --- writer: ./factory launcher ---
 write_launcher() {
-local LAUNCHER="$1/factory"
-local SCRIPT_PATH="$(realpath "$0")"
-if [[ "$SCRIPT_PATH" == "$1"* ]] && [[ "$SCRIPT_PATH" != "$LAUNCHER" ]]; then
-  rm -f "$SCRIPT_PATH" || true
-fi
-cat > "$LAUNCHER" <<'LAUNCH'
+cat > "$1/factory" <<LAUNCH
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
-FACTORY_DIR="${ROOT}/.factory"
-PY_NAME="factory.py"
-
-if [[ "${1:-}" == "teardown" ]]; then
-  echo "This will permanently remove:"
-  echo "  - All factory worktrees"
-  echo "  - All factory/* branches"
-  echo "  - .factory/ (standalone factory repo)"
-  echo "  - factory launcher"
-  echo "  - PURPOSE.md"
-  echo ""
-  printf "Type 'yes' to confirm: "
-  read -r confirm
-  if [[ "$confirm" != "yes" ]]; then
-    echo -e "\033[33mfactory:\033[0m teardown cancelled"
-    exit 1
-  fi
-
-  # restore factory.sh before teardown
+if [[ "\${1:-}" == "teardown" ]]; then
   if [[ -f "$FACTORY_DIR/factory.sh" ]]; then
-    cp "$FACTORY_DIR/factory.sh" "$ROOT/factory.sh"
-    echo -e "\033[33mfactory:\033[0m restored factory.sh"
+    cp "$FACTORY_DIR/factory.sh" "$SOURCE_DIR/factory.sh"
   fi
-
-  exec bash "$ROOT/factory.sh" teardown
+  exec bash "$SOURCE_DIR/factory.sh" teardown
 fi
 
 cd "$FACTORY_DIR"
 exec python3 "$PY_NAME"
 LAUNCH
-chmod +x "$LAUNCHER"
-if ! grep -qxF "/factory" "$EXCLUDE_FILE" 2>/dev/null; then
-  printf "\n/factory\n" >> "$EXCLUDE_FILE"
-fi
+chmod +x "$SOURCE_DIR/factory"
 }
 
 # --- writer: post-commit hook ---
@@ -1682,14 +1632,21 @@ chmod +x "$1/post-commit"
 }
 
 # --- ensure .factory/ is locally ignored ---
-ensure_excluded() {
+setup_excludes() {
   mkdir -p "$(dirname "$EXCLUDE_FILE")"
   if ! grep -qxF "/.factory/" "$EXCLUDE_FILE" 2>/dev/null; then
     printf "\n/.factory/\n" >> "$EXCLUDE_FILE"
   fi
+  if ! grep -qxF "/factory" "$EXCLUDE_FILE" 2>/dev/null; then
+    printf "\n/factory\n" >> "$EXCLUDE_FILE"
+  fi
 }
 
-# --- bootstrap: set up .factory/ from scratch ---
+remove_script() {
+  rm -f "$SOURCE_DIR/factory.sh"
+}
+
+# --- write all factory files to a directory ---
 write_files() {
   local dir="$1"
   mkdir -p "$dir"
@@ -1711,10 +1668,7 @@ write_files() {
   write_hook "$dir/hooks"
 }
 
-bootstrap() {
-  write_files "$FACTORY_DIR"
-
-  # git
+setup_repo() {
   git init "$FACTORY_DIR" >/dev/null 2>&1
   git -C "$FACTORY_DIR" config core.hooksPath hooks
   local TASK_FILE="$(ls "$FACTORY_DIR/tasks/"*.md 2>/dev/null | head -1)"
@@ -1727,12 +1681,54 @@ bootstrap() {
     git add tasks/
     git commit -m "Initial task: $TASK_NAME" >/dev/null 2>&1 || true
   )
+}
 
+# --- tear down .factory/, worktrees, and factory/* branches ---
+teardown() {
+  if [[ -z "$FACTORY_DIR" ]] || [[ "$FACTORY_DIR" != *".factory" ]]; then
+    echo -e "\033[31mfactory:\033[0m error: unsafe FACTORY_DIR: $FACTORY_DIR" >&2
+    exit 1
+  fi
+
+  if [[ -d "$FACTORY_DIR/worktrees" ]]; then
+    for wt in "$FACTORY_DIR/worktrees"/*/; do
+      [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    done
+  fi
+
+  rm -rf "$FACTORY_DIR"
+
+  git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
+    git branch -D "$b" >/dev/null 2>&1 || true
+  done
+  rm -f "$SOURCE_DIR/factory"
 }
 
 # --- handle commands ---
 case "${1:-}" in
+  help|--help|-h)
+    echo "usage: ./factory.sh "
+    echo ""
+    echo "commands:"
+    echo "   [claude|codex]   bootstrap or resume with specified provider (default: $PROVIDER)"
+    echo "   dump             write all factory files to ./factory_dump/"
+    echo "   teardown         tear down .factory/, worktrees, and factory/* branches"
+    echo "   help             display this help message"
+    exit 0
+    ;;
   teardown)
+    echo "This will permanently remove:"
+    echo "  - The .factory/ itself (standalone repo)"
+    echo "  - All factory worktrees & factory/* branches"
+    echo "  - factory launcher"
+    echo ""
+    printf "Hit 'y' to confirm: "
+    read -r confirm
+    if [[ "$confirm" != "y" ]]; then
+      rm -f "$SOURCE_DIR/factory.sh"  # clean up restored script
+      echo -e "\033[33mfactory:\033[0m teardown cancelled"
+      exit 1
+    fi
     teardown
     echo -e "\033[33mfactory:\033[0m teardown complete"
     exit 0
@@ -1744,34 +1740,22 @@ case "${1:-}" in
     echo -e "\033[33mfactory:\033[0m dumped to $DUMP_DIR"
     exit 0
     ;;
-  dev)
-    [[ -d "$FACTORY_DIR" ]] && teardown
-    ensure_excluded
-    bootstrap
-    echo -e "\033[33mfactory:\033[0m dev mode — factory at .factory/"
-    cd "$FACTORY_DIR"
-    exec python3 "$PY_NAME"
-    ;;
-    help|--help|-h)
-      echo "usage: ./factory.sh "
-      echo ""
-      echo "commands:"
-      echo "   [claude|codex]   bootstrap or resume with specified provider (default: $PROVIDER)"
-      echo "   dump             write all factory files to ./factory_dump/"
-      echo "   teardown         tear down .factory/, worktrees, and factory/* branches"
-      echo "   help             display this help message"
-      exit 0
-      ;;
   *)
-    ensure_excluded
-    # resume if already bootstrapped
+    # if bootstrapped, resume
     if [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
       echo -e "\033[33mfactory:\033[0m resuming"
       cd "$FACTORY_DIR"
       exec python3 "$PY_NAME"
     fi
-    bootstrap
-    write_launcher "$ROOT"
+
+    # otherwise bootstrap
+    setup_excludes
+    write_files "$FACTORY_DIR"
+    setup_repo
+    write_launcher "$SOURCE_DIR"
+    [[ "$KEEP_SCRIPT" == true ]] || remove_script
+
+    # launch the factory
     cd "$FACTORY_DIR"
     exec python3 "$PY_NAME"
     ;;
