@@ -56,7 +56,7 @@ teardown() {
 
 # --- writer: python runner ---
 write_runner() {
-cat > "$FACTORY_DIR/$PY_NAME" <<'RUNNER'
+cat > "$1/$PY_NAME" <<'RUNNER'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast, json, threading, atexit
 from pathlib import Path
@@ -943,7 +943,7 @@ chmod +x "$FACTORY_DIR/$PY_NAME"
 # --- writer: CLAUDE.md ---
 write_claude_md() {
 local REPO="$(basename "$ROOT")"
-cat > "$FACTORY_DIR/CLAUDE.md" <<CLAUDE
+cat > "$1/CLAUDE.md" <<CLAUDE
 # Factory
 
 Automated software factory for \`$REPO\`.
@@ -1037,7 +1037,7 @@ CLAUDE
 
 # --- writer: INITIATIVES.md ---
 write_initiatives_md() {
-cat > "$FACTORY_DIR/INITIATIVES.md" <<'INITIATIVES'
+cat > "$1/INITIATIVES.md" <<'INITIATIVES'
 # Initiatives
 
 Initiatives are high-level goals that define **what** the factory is trying to
@@ -1092,7 +1092,7 @@ INITIATIVES
 
 # --- writer: PROJECTS.md ---
 write_projects_md() {
-cat > "$FACTORY_DIR/PROJECTS.md" <<'PROJECTS'
+cat > "$1/PROJECTS.md" <<'PROJECTS'
 # Projects
 
 Projects are scoped deliverables that advance an initiative. Each project is a
@@ -1142,7 +1142,7 @@ PROJECTS
 
 # --- writer: TASKS.md ---
 write_tasks_md() {
-cat > "$FACTORY_DIR/TASKS.md" <<'TASKS'
+cat > "$1/TASKS.md" <<'TASKS'
 # Tasks
 
 Tasks are atomic units of work. Each task is a markdown file in `tasks/`
@@ -1210,7 +1210,7 @@ TASKS
 
 # --- writer: agents/PLANNER.md ---
 write_planner_md() {
-cat > "$FACTORY_DIR/agents/PLANNER.md" <<'PLANNING'
+cat > "$1/PLANNER.md" <<'PLANNING'
 # Planning
 
 You are the factory's planning agent. You are invoked whenever there is no
@@ -1360,12 +1360,12 @@ at any time.
 
 Do NOT commit. The runner will commit your work.
 PLANNING
-sed -i '' "s|{source_repo}|$ROOT|g" "$FACTORY_DIR/agents/PLANNER.md"
+sed -i '' "s|{source_repo}|$ROOT|g" "$1/PLANNER.md"
 }
 
 # --- writer: agents/FIXER.md ---
 write_fixer_md() {
-cat > "$FACTORY_DIR/agents/FIXER.md" <<'FAILURE'
+cat > "$1/FIXER.md" <<'FAILURE'
 # Failure Analysis Protocol
 
 When you encounter a stopped task with `stop_reason: failed` or
@@ -1454,7 +1454,7 @@ FAILURE
 
 # --- writer: EPILOGUE.md ---
 write_epilogue_md() {
-cat > "$FACTORY_DIR/EPILOGUE.md" <<'EPILOGUE'
+cat > "$1/EPILOGUE.md" <<'EPILOGUE'
 
 ---
 
@@ -1471,10 +1471,10 @@ EPILOGUE
 }
 
 # --- writer: bootstrap tasks ---
-write_bootstrap_task() {
+write_bootstrap_tasks() {
 local TODAY="$(date +%Y-%m-%d)"
-local FACTORY_TASK="$FACTORY_DIR/tasks/${TODAY}-define-factory-purpose.md"
-local REPO_TASK="$FACTORY_DIR/tasks/${TODAY}-define-repo-purpose.md"
+local FACTORY_TASK="$1/${TODAY}-define-factory-purpose.md"
+local REPO_TASK="$1/${TODAY}-define-repo-purpose.md"
 
 cat > "$FACTORY_TASK" <<'TASK'
 ---
@@ -1598,11 +1598,13 @@ the tactical purpose and measures directly. Examples:
 
 ## Done
 
-- `file_contains("PURPOSE.md", "## Purpose")`
+- `file_contains("PURPOSE.md", "# Purpose")`
+- `file_contains("PURPOSE.md", "# Measures")`
+- `file_contains("PURPOSE.md", "# Tests")`
 
 ## Verify
 
-- Confirm `PURPOSE.md` contains `## Purpose`, `## Measures`, and `## Tests`
+- Confirm `PURPOSE.md` contains Purpose, Measures, and Tests
   sections with Existential, Strategic, and Tactical subsections.
 - Confirm each subsection has the right number of bullets (3-5 existential, 5-8 strategic, 5-10 tactical).
 - Read the sections back and check they are grounded in the actual repo, not
@@ -1623,9 +1625,9 @@ previous: '"${TODAY}"'-define-factory-purpose.md' \
 
 # --- writer: ./factory launcher ---
 write_launcher() {
-local LAUNCHER="$ROOT/factory"
+local LAUNCHER="$1/factory"
 local SCRIPT_PATH="$(realpath "$0")"
-if [[ "$SCRIPT_PATH" == "$ROOT"* ]] && [[ "$SCRIPT_PATH" != "$LAUNCHER" ]]; then
+if [[ "$SCRIPT_PATH" == "$1"* ]] && [[ "$SCRIPT_PATH" != "$LAUNCHER" ]]; then
   rm -f "$SCRIPT_PATH" || true
 fi
 cat > "$LAUNCHER" <<'LAUNCH'
@@ -1695,11 +1697,11 @@ fi
 
 # --- writer: post-commit hook ---
 write_hook() {
-cat > "$FACTORY_DIR/hooks/post-commit" <<'HOOK'
+cat > "$1/post-commit" <<'HOOK'
 #!/usr/bin/env bash
 echo -e "NEW COMMIT"
 HOOK
-chmod +x "$FACTORY_DIR/hooks/post-commit"
+chmod +x "$1/post-commit"
 }
 
 # --- ensure .factory/ is locally ignored ---
@@ -1711,27 +1713,29 @@ ensure_excluded() {
 }
 
 # --- bootstrap: set up .factory/ from scratch ---
-bootstrap() {
-  # directories
-  mkdir -p "$FACTORY_DIR"
+write_files() {
+  local dir="$1"
+  mkdir -p "$dir"
   for d in tasks hooks state agents initiatives projects logs worktrees; do
-    mkdir -p "$FACTORY_DIR/$d"
+    mkdir -p "$dir/$d"
   done
+  cp "$0" "$dir/factory.sh"
+  printf '%s\n' state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$dir/.gitignore"
+  printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
+  write_runner "$dir"
+  write_claude_md "$dir"
+  write_initiatives_md "$dir"
+  write_projects_md "$dir"
+  write_tasks_md "$dir"
+  write_epilogue_md "$dir"
+  write_planner_md "$dir/agents"
+  write_fixer_md "$dir/agents"
+  write_bootstrap_tasks "$dir/tasks"
+  write_hook "$dir/hooks"
+}
 
-  # content
-  cp "$0" "$FACTORY_DIR/factory.sh"
-  printf '%s\n' state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$FACTORY_DIR/.gitignore"
-  printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$FACTORY_DIR/config.json"
-  write_runner
-  write_claude_md
-  write_initiatives_md
-  write_projects_md
-  write_tasks_md
-  write_planner_md
-  write_fixer_md
-  write_epilogue_md
-  write_bootstrap_task
-  write_hook
+bootstrap() {
+  write_files "$FACTORY_DIR"
 
   # git
   git init "$FACTORY_DIR" >/dev/null 2>&1
@@ -1756,6 +1760,13 @@ case "${1:-}" in
     echo -e "\033[33mfactory:\033[0m reset"
     exit 0
     ;;
+  dump)
+    DUMP_DIR="$(dirname "$0")/factory_dump"
+    rm -rf "$DUMP_DIR"
+    write_files "$DUMP_DIR"
+    echo -e "\033[33mfactory:\033[0m dumped to $DUMP_DIR"
+    exit 0
+    ;;
   dev)
     [[ -d "$FACTORY_DIR" ]] && teardown
     ensure_excluded
@@ -1769,6 +1780,7 @@ case "${1:-}" in
       echo ""
       echo "commands:"
       echo "   [claude|codex]   bootstrap or resume with specified provider (default: $PROVIDER)"
+      echo "   dump             write all factory files to ./factory_dump/"
       echo "   reset            tear down .factory/, worktrees, and factory/* branches"
       echo "   help             display this help message"
       exit 0
@@ -1782,7 +1794,7 @@ case "${1:-}" in
       exec python3 "$PY_NAME"
     fi
     bootstrap
-    write_launcher
+    write_launcher "$ROOT"
     cd "$FACTORY_DIR"
     exec python3 "$PY_NAME"
     ;;
