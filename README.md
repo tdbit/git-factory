@@ -23,7 +23,7 @@ After that, just run `./factory` to resume.
 ## How it works
 
 1. `factory.sh` creates `.factory/` as a standalone git repo (via `git init`) for factory metadata
-2. It writes a Python runner (`factory.py`), a `CLAUDE.md`, and a bootstrap task into `.factory/`
+2. It writes a Python runner (`factory.py`), markdown instruction files (`CLAUDE.md`, `INITIATIVES.md`, `PROJECTS.md`, `TASKS.md`, `PLANNING.md`, `EPILOGUE.md`), and a bootstrap task into `.factory/`
 3. The runner launches the agent CLI in headless mode (Claude uses `--dangerously-skip-permissions`; Codex uses `exec --json`)
 4. On first run, the agent reads your repo's `CLAUDE.md` and `README.md`, then writes Purpose, Measures, and Tests sections that guide all future work
 5. After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
@@ -38,6 +38,11 @@ your-repo/
   .factory/             # standalone git repo, locally git-ignored
     factory.py          # python orchestrator
     CLAUDE.md           # agent's operating instructions
+    INITIATIVES.md      # initiative format spec
+    PROJECTS.md         # project format spec
+    TASKS.md            # task format spec
+    PLANNING.md         # planning agent instructions
+    EPILOGUE.md         # project task epilogue template
     config.json         # bootstrap config (provider, default branch, worktrees path)
     agents/             # agent persona definitions (markdown)
     initiatives/        # high-level goals (YYYY-slug.md)
@@ -90,14 +95,14 @@ The system enforces focus by maintaining:
 
 ## Planning agent
 
-When no ready task exists, the runner automatically invokes a built-in **planning agent** that:
+When no ready task exists, the runner automatically invokes a **planning agent** using the instructions in `.factory/PLANNING.md`. The planner:
 
 1. Checks scarcity invariants
 2. Promotes or creates initiatives / projects as needed
 3. Creates exactly **one** new task per planning run
 4. Commits the task file to the factory repo
 
-The planning agent follows strict rules: prefer refinement over creation, never create parallel structure, and produce tasks that are atomic and completable in a single agent session.
+The planning agent reads `INITIATIVES.md`, `PROJECTS.md`, and `TASKS.md` for format specs. Its instructions are editable after bootstrap — no need to re-extract the runner.
 
 ## Task system
 
@@ -145,8 +150,7 @@ Runner-managed (set automatically):
 - **stop_reason** — required when `status: stopped` (e.g. `failed`)
 - **pid** — process ID of the runner
 - **session** — agent session ID
-- **commit** — HEAD commit hash when a factory task completed
-- **project_commit** — HEAD commit hash when a project task completed
+- **commit** — HEAD commit hash when the task completed
 
 ### Completion conditions
 
@@ -225,13 +229,18 @@ No other dependencies. Everything is self-contained in `factory.sh`.
 
 ## How the agent operates
 
-The agent's behavior is defined by `.factory/CLAUDE.md`. After bootstrap, this file contains:
+The agent's behavior is defined by markdown files in `.factory/`:
 
-- **Purpose** — what "better" means for your codebase, at existential, strategic, and tactical levels
-- **Measures** — observable signals of progress, each with a way to check it
-- **Tests** — gate questions the agent asks before every change
+- **CLAUDE.md** — system overview, work model, lifecycle, scarcity invariants
+- **INITIATIVES.md** — initiative format spec
+- **PROJECTS.md** — project format spec (including Goals section)
+- **TASKS.md** — task format spec (frontmatter, completion conditions, sections)
+- **PLANNING.md** — planning agent instructions (read by the runner as a prompt)
+- **EPILOGUE.md** — appended to project task prompts (with `{project_dir}` substitution)
 
-The agent reads the source repo's `CLAUDE.md` and `README.md` to understand what it's working with, then writes these sections based on what it finds.
+After bootstrap, the agent's first task reads the source repo's `CLAUDE.md` and `README.md`, then writes Purpose, Measures, and Tests sections into `.factory/CLAUDE.md` that guide all future work.
+
+All instruction files are editable after bootstrap without re-extracting the runner.
 
 ## Design decisions
 
@@ -241,6 +250,6 @@ The agent reads the source repo's `CLAUDE.md` and `README.md` to understand what
 - **Self-replacing installer** — `factory.sh` is a one-shot installer that replaces itself with a tiny launcher script. The original is preserved in `.factory/` for `./factory destroy` to restore.
 - **Headless agents** — Claude runs with `--dangerously-skip-permissions` in print mode; Codex runs with `exec --json`. No interactive prompts, no TUI.
 - **Local-only git ignore** — uses `.git/info/exclude` instead of `.gitignore` so factory artifacts never pollute your repo's tracked files.
-- **Autonomous planning** — when no tasks are ready, a built-in planning agent creates the next task following scarcity invariants, ensuring the factory always has work.
+- **Autonomous planning** — when no tasks are ready, the runner reads `PLANNING.md` and invokes a planning agent that creates the next task following scarcity invariants.
 - **Three-level work hierarchy** — initiatives, projects, and tasks provide structure without bureaucracy. Flat folders, frontmatter relationships, no nesting.
 - **Agent personas** — custom agent definitions in `agents/` let tasks run with specialized system prompts and tool permissions.

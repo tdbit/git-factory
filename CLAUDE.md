@@ -32,6 +32,11 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/` | Standalone git repo for factory metadata |
 | `.factory/factory.py` | Python orchestrator |
 | `.factory/CLAUDE.md` | Agent's operating instructions (Purpose/Measures/Tests) |
+| `.factory/INITIATIVES.md` | Initiative format spec |
+| `.factory/PROJECTS.md` | Project format spec |
+| `.factory/TASKS.md` | Task format spec |
+| `.factory/PLANNING.md` | Planning agent instructions |
+| `.factory/EPILOGUE.md` | Project task epilogue template |
 | `.factory/agents/` | Agent persona definitions (markdown) |
 | `.factory/initiatives/` | High-level goals (YYYY-slug.md) |
 | `.factory/projects/` | Mid-level projects (YYYY-MM-slug.md) |
@@ -52,7 +57,12 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 5. **Functions**:
    - `teardown()` — remove `.factory/`, worktrees, `factory/*` branches
    - `write_runner()` — embedded `factory.py` (~880 lines)
-   - `write_claude_md()` — agent operating instructions template
+   - `write_claude_md()` — agent operating instructions
+   - `write_initiatives_md()` — initiative format spec
+   - `write_projects_md()` — project format spec
+   - `write_tasks_md()` — task format spec
+   - `write_planning_md()` — planning agent instructions
+   - `write_epilogue_md()` — project task epilogue template
    - `write_bootstrap_task()` — initial `define-purpose` task
    - `write_launcher()` — `./factory` launcher script
    - `write_hook()` — post-commit hook
