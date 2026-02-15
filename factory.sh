@@ -675,7 +675,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         proc.kill()
         proc.wait()
         print()
-        log("stopped")
+        log("task stopped")
         return False, session_id
 
 
@@ -771,7 +771,7 @@ def run():
                 return
             continue
         name = task["name"]
-        log(f"task: {name}")
+        log(f"starting task: {name}")
 
         # determine work directory: project worktree or factory worktree
         is_project_task = task["parent"].startswith("projects/")
@@ -832,7 +832,7 @@ def run():
                     pass
             update_task_meta(task, status="stopped", stop_reason="failed")
             commit_task(task, f"Failed Task: {name}")
-            log(f"task failed: {name}")
+            log(f"task crashed: {name}")
             return
         if not agent_committed:
             log("agent made no commits")
@@ -844,11 +844,11 @@ def run():
             else:
                 update_task_meta(task, status="completed", commit=head_after)
             commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=commit_work_dir)
-            log(f"task done: {name}")
+            log(f"task completed: {name}")
         else:
             update_task_meta(task, status="suspended")
             commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=commit_work_dir)
-            log(f"task did not complete: {name}")
+            log(f"task failed: {name}")
             if details:
                 log("done conditions:")
                 for cond, ok in details:
