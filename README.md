@@ -115,7 +115,7 @@ the full breakdown.
 
 ## Usage
 
-### Run
+**Run**
 
 ```bash
 ./factory            # resumes where it left off
@@ -123,14 +123,14 @@ the full breakdown.
 
 The agent works in the foreground, streaming tool calls and costs to the terminal.
 
-### Dev mode
+**Dev mode**
 
 ```bash
 bash factory.sh dev          # tear down and re-bootstrap every time
 bash factory.sh reset        # tear down only
 ```
 
-### Destroy
+**Destroy**
 
 ```bash
 ./factory destroy

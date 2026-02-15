@@ -70,13 +70,13 @@ All work is organized in three flat folders with relationships defined by frontm
 | Project | `projects/` | `YYYY-MM-slug.md` | Mid-level workstreams |
 | Task | `tasks/` | `YYYY-MM-DD-slug.md` | Atomic units of agent work |
 
-### Structural relationships
+**Structural relationships**
 
 - `parent:` links a task → project, or a project → initiative
 - `previous:` defines sequential dependency between tasks
 - No `parent` means the task is a **factory maintenance task**
 
-### Lifecycle states
+**Lifecycle states**
 
 All initiatives, projects, and tasks share the same lifecycle:
 
@@ -90,7 +90,7 @@ All initiatives, projects, and tasks share the same lifecycle:
 
 There is no `failed` state. Failure is represented as `status: stopped` with `stop_reason: failed`.
 
-### Scarcity invariants
+**Scarcity invariants**
 
 The system enforces focus by maintaining:
 
@@ -141,7 +141,7 @@ Why this task exists and what purpose it serves.
 How the agent should check its own work before committing.
 ```
 
-### Frontmatter fields
+**Frontmatter fields**
 
 Author-set:
 
@@ -158,7 +158,7 @@ Runner-managed (set automatically):
 - **session** — agent session ID
 - **commit** — HEAD commit hash when the task completed
 
-### Completion conditions
+**Completion conditions**
 
 Listed in the `## Done` section, one per line. All must pass.
 
