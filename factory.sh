@@ -272,7 +272,8 @@ def parse_task(path):
         "name": name,
         "tools": meta.get("tools", DEFAULT_TOOLS),
         "status": meta.get("status", ""),
-        "agent": meta.get("agent", ""),
+        "handler": meta.get("handler", ""),
+        "author": meta.get("author", ""),
         "parent": meta.get("parent", ""),
         "previous": meta.get("previous", ""),
         "done": done_lines,
@@ -864,8 +865,8 @@ def run():
 
         # Load agent if specified
         agent_def = None
-        if task.get("agent"):
-            agent_name = task["agent"].replace("agents/", "").replace(".md", "")
+        if task.get("handler"):
+            agent_name = task["handler"].replace("agents/", "").replace(".md", "")
             agent_def = load_agent(agent_name)
             if agent_def:
                 log(f"using agent: {agent_name}")
@@ -1048,6 +1049,7 @@ achieve. Each initiative is a markdown file in `initiatives/` named
 ```markdown
 ---
 status: backlog
+author: planner
 ---
 
 ## Problem
@@ -1084,6 +1086,7 @@ to be created.
 ## Frontmatter
 
 - **status** — lifecycle state (backlog, active, suspended, completed, stopped)
+- **author** — who created this initiative (`planner`, `fixer`, or a custom name)
 INITIATIVES
 }
 
@@ -1100,6 +1103,7 @@ markdown file in `projects/` named `YYYY-MM-slug.md`.
 ```markdown
 ---
 status: backlog
+author: planner
 parent: initiatives/YYYY-slug.md
 ---
 
@@ -1131,6 +1135,7 @@ acceptance criteria isn't ready to be created.
 ## Frontmatter
 
 - **status** — lifecycle state (backlog, active, suspended, completed, stopped)
+- **author** — who created this project (`planner`, `fixer`, or a custom name)
 - **parent** — initiative this project advances (example: `initiatives/2026-improve-testing.md`)
 PROJECTS
 }
@@ -1149,6 +1154,7 @@ them one at a time, and checks their completion conditions.
 ```markdown
 ---
 tools: Read,Write,Edit,Bash
+author: planner
 parent: projects/name.md
 previous: YYYY-MM-DD-other-task.md
 ---
@@ -1182,6 +1188,7 @@ How the agent should check its own work before committing.
 Author-set fields:
 
 - **tools** — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`)
+- **author** — who created this task (e.g. `planner`, `fixer`, or another agent's name)
 - **parent** — project this task advances (example: `projects/2026-01-auth-hardening.md`). Omit for factory maintenance tasks.
 - **previous** — filename of a task that must complete first (dependency)
 
@@ -1346,6 +1353,7 @@ When writing tasks:
 - Produces observable change.
 - Includes strict Done conditions.
 - Advances the active project (or is an unparented factory task).
+- Always include `author: planner` in the frontmatter.
 
 Unparented tasks are factory maintenance tasks. At most one may be active
 at any time.
@@ -1407,6 +1415,7 @@ The level determines the prescription's scope.
 
 Create a new task that closes the gap. The task must:
 
+- Include `author: fixer` in the frontmatter.
 - **Target a system file** — `factory.py`, `CLAUDE.md`, `agents/PLANNER.md`,
   `TASKS.md`, or another factory-internal file. It does NOT redo the
   failed work.
@@ -1470,6 +1479,7 @@ local REPO_TASK="$FACTORY_DIR/tasks/${TODAY}-define-repo-purpose.md"
 cat > "$FACTORY_TASK" <<'TASK'
 ---
 tools: Read,Write,Edit,Bash
+author: factory
 ---
 
 Examine this repository. Read its key files to understand what this software
