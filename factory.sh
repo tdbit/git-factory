@@ -567,13 +567,9 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
 
     full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
 
-    model_arg = []
-    model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "").strip()
-    if model_name:
-        model_arg = ["--model", model_name]
-        log(f"  → using: {cli_name or 'claude'}, model: {model_name}")
-    else:
-        log(f"  → using: {cli_name or 'claude'}, model: default")
+    model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
+    model_arg = ["--model", model_name]
+    log(f"  → using: {cli_name or 'claude'}, model: {model_name}")
 
     proc = subprocess.Popen(
         [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
