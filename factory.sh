@@ -146,7 +146,20 @@ def build_epilogue(task, project_dir):
         return ""
     return epilogue_md.read_text().replace("{project_dir}", str(project_dir))
 
+_has_progress = False
+
+def _show_progress(line):
+    global _has_progress
+    sys.stdout.write("\r" + line + "\033[K")
+    sys.stdout.flush()
+    _has_progress = True
+
 def log(msg):
+    global _has_progress
+    if _has_progress:
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+        _has_progress = False
     print(f"\033[33mfactory:\033[0m {msg}", flush=True)
 
 def sh(*cmd):
@@ -448,11 +461,8 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
         stderr_lines = []
 
         stdout_garbage = []
-        progress_len = 0
-        prefix = "\033[33mfactory:\033[0m "
 
         def _handle_event(ev):
-            nonlocal progress_len
             etype = ev.get("type")
             item = ev.get("item") or {}
             # shorten long commands to first line
@@ -469,23 +479,16 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
             if etype == "item.started":
                 cmd = item.get("command") or ""
                 if cmd:
-                    line = f"{prefix}\033[36m→ Run\033[0m \033[2m{cmd}\033[0m"
-                    progress_len = len(line)
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
+                    _show_progress(f"\033[33mfactory:\033[0m \033[36m→ Run\033[0m \033[2m{cmd}\033[0m")
                 return
             if etype == "item.completed":
                 cmd = item.get("command") or ""
                 out = item.get("aggregated_output") or ""
                 exit_code = item.get("exit_code")
                 if cmd:
-                    status_prefix = "\033[36m✓ Run\033[0m" if exit_code == 0 else "\033[31m✗ Run\033[0m"
+                    prefix = "\033[36m✓ Run\033[0m" if exit_code == 0 else "\033[31m✗ Run\033[0m"
                     suffix = "" if exit_code == 0 else f" (exit {exit_code})"
-                    line = f"{prefix}{status_prefix} \033[2m{cmd}\033[0m{suffix}"
-                    pad = max(0, progress_len - len(line))
-                    sys.stdout.write("\r" + line + (" " * pad) + "\n")
-                    sys.stdout.flush()
-                    progress_len = 0
+                    log(f"{prefix} \033[2m{cmd}\033[0m{suffix}")
                 if out and exit_code != 0:
                     print(out, end="" if out.endswith("\n") else "\n")
                 return
@@ -637,9 +640,9 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
                             cmd = inp.get("command", "")
                             detail = cmd[:120] + ("…" if len(cmd) > 120 else "")
                         if detail:
-                            log(f"\033[36m→ {name}\033[0m \033[2m{detail}\033[0m")
+                            _show_progress(f"\033[33mfactory:\033[0m \033[36m→ {name}\033[0m \033[2m{detail}\033[0m")
                         else:
-                            log(f"\033[36m→ {name}\033[0m")
+                            _show_progress(f"\033[33mfactory:\033[0m \033[36m→ {name}\033[0m")
             elif t == "result":
                 session_id = ev.get("session_id", session_id)
                 cost = ev.get("cost_usd") or ev.get("total_cost_usd")
@@ -1566,6 +1569,15 @@ case "${1:-}" in
     cd "$FACTORY_DIR"
     exec python3 "$PY_NAME"
     ;;
+    help|--help|-h)
+      echo "usage: ./factory.sh "
+      echo ""
+      echo "commands:"
+      echo "   [claude|codex]   bootstrap or resume with specified provider (default: $PROVIDER)"
+      echo "   reset            tear down .factory/, worktrees, and factory/* branches"
+      echo "   help             display this help message"
+      exit 0
+      ;;
   *)
     ensure_excluded
     # resume if already bootstrapped
@@ -1576,7 +1588,6 @@ case "${1:-}" in
     fi
     bootstrap
     write_launcher
-    echo -e "\033[33mfactory:\033[0m run ./factory to start"
     cd "$FACTORY_DIR"
     exec python3 "$PY_NAME"
     ;;
