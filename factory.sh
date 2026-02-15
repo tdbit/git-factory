@@ -1564,9 +1564,11 @@ PY_NAME="factory.py"
 
 if [[ "${1:-}" == "destroy" ]]; then
   echo "This will permanently remove:"
+  echo "  - All factory worktrees"
+  echo "  - All factory/* branches"
   echo "  - .factory/ (standalone factory repo)"
-  echo "  - factory/* project branches"
-  echo "  - ./factory launcher"
+  echo "  - factory launcher"
+  echo "  - PURPOSE.md"
   echo ""
   printf "Type 'yes' to confirm: "
   read -r confirm
@@ -1583,9 +1585,11 @@ if [[ "${1:-}" == "destroy" ]]; then
 
   # remove project worktrees (source repo worktrees)
   if [[ -d "$FACTORY_DIR/worktrees" ]]; then
+    printf "\033[33mfactory:\033[0m removing worktrees..."
     for wt in "$FACTORY_DIR/worktrees"/*/; do
       [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
     done
+    printf "\r\033[33mfactory:\033[0m removed worktrees   \n"
   fi
 
   rm -rf "$FACTORY_DIR"
@@ -1596,6 +1600,9 @@ if [[ "${1:-}" == "destroy" ]]; then
     git branch -D "$b" >/dev/null 2>&1 || true
     echo -e "\033[33mfactory:\033[0m deleted '$b' branch"
   done
+
+  # remove source repo PURPOSE.md
+  rm -f "$ROOT/PURPOSE.md"
 
   # remove this launcher
   rm -f "$ROOT/factory"
