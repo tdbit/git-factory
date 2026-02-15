@@ -917,7 +917,7 @@ def run():
 if __name__ == "__main__":
     run()
 RUNNER
-chmod +x "$FACTORY_DIR/$PY_NAME"
+chmod +x "$1/$PY_NAME"
 }
 
 # --- writer: CLAUDE.md ---
