@@ -711,6 +711,7 @@ def plan_next_task():
         info = format_result(result)
         if not porcelain:
             log(f"planner finished (nothing to commit) \033[2m{info}\033[0m" if info else "planner finished (nothing to commit)")
+            log("")
             return True
         counts = {"initiatives": 0, "projects": 0, "tasks": 0}
         for line in porcelain.splitlines():
@@ -724,6 +725,7 @@ def plan_next_task():
         log(f"  → {msg} \033[2m{info}\033[0m" if info else f"  → {msg}")
     except subprocess.CalledProcessError:
         log(f"planner finished (nothing to commit) \033[2m{info}\033[0m" if info else "planner finished (nothing to commit)")
+    log("")
     return True
 
 # --- main loop ---
@@ -787,6 +789,11 @@ def run():
             if section in task["sections"]:
                 prompt_parts.append(f"## {section.title()}\n\n{task['sections'][section]}")
         prompt = "\n\n".join(prompt_parts)
+
+        # surface done conditions so the agent knows exact acceptance criteria
+        if task["done"] and task["done"] != ["always"]:
+            checklist = "\n".join(f"- `{c}`" for c in task["done"])
+            prompt += f"\n\n## Acceptance Criteria\n\nYour work is verified by these exact conditions — file paths and names must match precisely:\n\n{checklist}"
 
         # append epilogue for project tasks
         if is_project_task:
