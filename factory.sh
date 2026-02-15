@@ -439,7 +439,7 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
     last_stderr = b""
     heartbeat_sec = float(os.environ.get("FACTORY_HEARTBEAT_SEC", "15"))
     for model_name in model_candidates:
-        log(f"  → using: codex, model: {model_name}")
+        log(f"  → using: codex \033[2m({model_name})\033[0m")
         proc = subprocess.Popen(
             [cli_path, "exec", "--model", model_name, "--sandbox", "workspace-write", "--json", full_prompt],
             stdout=subprocess.PIPE,
@@ -569,7 +569,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
 
     model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
     model_arg = ["--model", model_name]
-    log(f"  → using: {cli_name or 'claude'}, model: {model_name}")
+    log(f"  → using: {cli_name or 'claude'} \033[2m({model_name})\033[0m")
 
     proc = subprocess.Popen(
         [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
@@ -581,9 +581,9 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         start_new_session=True,
         cwd=work_dir,
     )
-    session_id = None
+    result = None
     stderr_output = []
-    
+
     def read_stderr():
         for line in iter(proc.stderr.readline, b""):
             line = line.decode().strip()
@@ -594,7 +594,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     stderr_reader.start()
     stdout_garbage = []
     def read_stream():
-        nonlocal session_id
+        nonlocal result
         for raw in iter(proc.stdout.readline, b""):
             raw = raw.strip()
             if not raw:
@@ -634,16 +634,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
                         else:
                             _show_progress(f"\033[36m  → {lname}\033[0m")
             elif t == "result":
-                session_id = ev.get("session_id", session_id)
-                cost = ev.get("cost_usd") or ev.get("total_cost_usd")
-                dur = ev.get("duration_ms")
-                parts = []
-                if dur:
-                    parts.append(f"{dur/1000:.1f}s")
-                if cost:
-                    parts.append(f"${cost:.4f}")
-                if parts:
-                    log(f"  → result: \033[2m{', '.join(parts)}\033[0m")
+                result = ev
     reader = threading.Thread(target=read_stream, daemon=True)
     reader.start()
     start = time.monotonic()
@@ -652,7 +643,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         while reader.is_alive() or stderr_reader.is_alive():
             if deadline and time.monotonic() >= deadline:
                 _kill_proc(proc, f"exceeded {AGENT_TIMEOUT:.0f}s timeout")
-                return False, session_id
+                return False, result
             reader.join(timeout=0.5)
             stderr_reader.join(timeout=0.5)
 
@@ -660,14 +651,27 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         if exit_code != 0:
             log(f"claude failed with exit code {exit_code}")
             _dump_debug("claude", stderr_output, stdout_garbage)
-        return exit_code == 0, session_id
+        return exit_code == 0, result
     except KeyboardInterrupt:
         proc.kill()
         proc.wait()
         print()
         log("task stopped")
-        return False, session_id
+        return False, result
 
+
+def format_result(result):
+    """Format a result event dict into a short string like '130.2s, $0.3683'."""
+    if not result:
+        return ""
+    parts = []
+    dur = result.get("duration_ms")
+    cost = result.get("cost_usd") or result.get("total_cost_usd")
+    if dur:
+        parts.append(f"{dur/1000:.1f}s")
+    if cost:
+        parts.append(f"${cost:.4f}")
+    return f"({', '.join(parts)})" if parts else ""
 
 def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log=None):
     cli = get_agent_cli()
@@ -687,11 +691,11 @@ def plan_next_task():
         return False
     today = time.strftime("%Y-%m-%d")
     prompt = planning_md.read_text().replace("{today}", today)
-    log("planner started")
+    log("\033[33mplanner\033[0m started:")
     head_before = sh("git", "rev-parse", "HEAD")
     run_log = _open_run_log("planning")
     try:
-        ok, session_id = run_agent(prompt, run_log=run_log)
+        ok, result = run_agent(prompt, run_log=run_log)
     finally:
         run_log.close()
     if not ok:
@@ -704,8 +708,9 @@ def plan_next_task():
             sh("git", "reset", "--soft", head_before)
         sh("git", "add", "-A")
         porcelain = sh("git", "status", "--porcelain")
+        info = format_result(result)
         if not porcelain:
-            log("planner finished (nothing to commit)")
+            log(f"planner finished (nothing to commit) \033[2m{info}\033[0m" if info else "planner finished (nothing to commit)")
             return True
         counts = {"initiatives": 0, "projects": 0, "tasks": 0}
         for line in porcelain.splitlines():
@@ -714,11 +719,11 @@ def plan_next_task():
                 if path.startswith(key + "/"):
                     counts[key] += 1
         parts = [f"{n} {k}" for k, n in counts.items() if n]
-        msg = f"Update plans: {', '.join(parts)}" if parts else "Update plans"
+        msg = f"updated: {', '.join(parts)}" if parts else "updated"
         sh("git", "commit", "-m", msg)
-        log(f"  → {msg}")
+        log(f"  → {msg} \033[2m{info}\033[0m" if info else f"  → {msg}")
     except subprocess.CalledProcessError:
-        log("planner finished (nothing to commit)")
+        log(f"planner finished (nothing to commit) \033[2m{info}\033[0m" if info else "planner finished (nothing to commit)")
     return True
 
 # --- main loop ---
@@ -765,16 +770,14 @@ def run():
                 return
             continue
         name = task["name"]
-        log(f"task started: {name}")
+        log(f"\033[32mtask\033[0m started: {name}")
 
         # determine work directory: project worktree or factory worktree
         is_project_task = task["parent"].startswith("projects/")
         if is_project_task:
             work_dir = ensure_project_worktree(task["parent"])
-            log(f"  → worktree: {Path(work_dir).name}")
         else:
             work_dir = ROOT
-            log("  → worktree: factory")
 
         update_task_meta(task, status="active", pid=str(os.getpid()))
         commit_task(task, f"Start Task: {name}")
@@ -804,9 +807,10 @@ def run():
 
         run_log = _open_run_log(name)
         try:
-            ok, session_id = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir, run_log=run_log)
+            ok, result = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir, run_log=run_log)
         finally:
             run_log.close()
+        session_id = (result or {}).get("session_id")
         if session_id:
             update_task_meta(task, session=session_id)
 
@@ -826,8 +830,10 @@ def run():
                     pass
             update_task_meta(task, status="stopped", stop_reason="failed")
             commit_task(task, f"Failed Task: {name}")
-            log(f"task crashed: {name}")
+            info = format_result(result)
+            log(f"  ✗ task crashed \033[2m{info}\033[0m" if info else "  ✗ task crashed")
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
+            log("")
             return
         if not agent_committed:
             log("agent made no commits")
@@ -841,18 +847,20 @@ def run():
         if passed:
             update_task_meta(task, status="completed", commit=head_after)
             commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=commit_work_dir)
-            log(f"task completed: {name}")
+            info = format_result(result)
+            log(f"  ✓ conditions: passed \033[2m{info}\033[0m" if info else "  ✓ all conditions passed")
         else:
             update_task_meta(task, status="suspended")
             commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=commit_work_dir)
-            log(f"task failed: {name}")
+            info = format_result(result)
+            log(f"  ✗ conditions: failed \033[2m{info}\033[0m" if info else "  ✗ conditions not met")
             if details:
                 for cond, ok in details:
                     mark = "✓" if ok else "✗"
-                    log(f"  {mark} {cond}")
+                    log(f"    {mark} {cond}")
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             log(f"  → task: {task['_path'].relative_to(ROOT)}")
-            return
+        log("")
 
 if __name__ == "__main__":
     run()
