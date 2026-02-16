@@ -1016,6 +1016,90 @@ Completed work lives in git history. It does not remain active context.
 CLAUDE
 }
 
+# --- writer: AGENTS.md ---
+write_agents_md() {
+cat > "$1/AGENTS.md" <<'AGENTS'
+# AGENTS.md
+
+An agent is a set of instructions given to the CLI alongside a task prompt. The task says what to do. The agent says how to think.
+
+Agents live in `agents/`. Each agent is a markdown file with frontmatter and a body.
+
+## File format
+
+```markdown
+tools: Read,Write,Edit,Glob,Grep
+author: factory
+---
+
+[agent body]
+```
+
+**Frontmatter:**
+- `tools` — what the agent is allowed to use. The task can override this.
+- `author` — who created the agent.
+
+**Body:** the agent prompt, structured as described below.
+
+## Agent structure
+
+Every agent follows this structure:
+
+### Identity
+
+One line. What this agent does. Not a persona, not a backstory. A capability.
+
+- "You understand things."
+- "You plan work."
+- "You diagnose failures."
+
+If you need a paragraph, you don't know what the agent does yet.
+
+### Capabilities
+
+What this agent can do. Tools, access, actions. An agent that doesn't know what it can do either asks unnecessary questions or tries things that fail.
+
+State what's available, not how to use it. The method section covers how.
+
+### Method
+
+How the agent does its work. Steps, in order. This is procedure, not principles.
+
+Each step should be concrete enough that you could tell whether the agent did it. "Examine the repo" is a step. "Be thorough" is not.
+
+If the method has conditional branches, state them. If steps have dependencies, state the order.
+
+### Halt Condition
+
+When to stop. What "I can't do this" looks like. What to output instead of nothing.
+
+Every agent must have a defined failure mode. An agent with no halt condition will generate plausible garbage rather than admitting it's stuck.
+
+### Validation
+
+Self-checks the agent applies to its own output before finishing. These should be thinking tools, not checklists.
+
+Good: "If you can ask 'to what end?' and get a meaningful answer, you haven't reached purpose yet."
+Bad: "Ensure all statements are purpose-oriented."
+
+The difference: a thinking tool changes what the agent generates. A checklist gets ignored.
+
+### Rules
+
+Hard constraints. Bullets. Short. Things that override everything else.
+
+Rules are what the agent must never do or must always do regardless of context. If it's situational, it belongs in Method.
+
+## Principles
+
+- **An agent is a method, not a persona.** Don't describe character, temperament, or attitude. Describe how it works.
+- **The task carries the what. The agent carries the how.** If you're putting specific instructions about a particular job in the agent, it belongs in the task prompt.
+- **Capabilities are separate from method.** What you can do vs how you do it. An agent might have Write access but only use it at the end. Capabilities state the former, method states the latter.
+- **Halt conditions are not optional.** An agent that can't say "I'm stuck" will never be stuck — it'll just be wrong.
+- **Validation catches the agent's own failure modes.** Write validation for the mistakes this specific agent is likely to make, not generic quality checks.
+AGENTS
+}
+
 # --- writer: INITIATIVES.md ---
 write_initiatives_md() {
 cat > "$1/INITIATIVES.md" <<'INITIATIVES'
@@ -1614,6 +1698,7 @@ write_files() {
   printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
   write_runner "$dir"
   write_claude_md "$dir"
+  write_agents_md "$dir"
   write_initiatives_md "$dir"
   write_projects_md "$dir"
   write_tasks_md "$dir"
