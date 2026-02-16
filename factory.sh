@@ -1146,12 +1146,12 @@ Be specific and concrete. Name files, functions, and behaviors.
 Completion conditions checked by the runner after the agent finishes.
 One condition per line. All must pass. Supported conditions:
 
-- `file_exists("path")` — file exists in the worktree
-- `file_absent("path")` — file does not exist
-- `file_contains("path", "text")` — file contains text
-- `file_missing_text("path", "text")` — file missing or lacks text
-- `command("cmd")` — shell command exits 0
-- `never` — task never completes (recurring)
+- \`file_exists("path")\` — file exists in the worktree
+- \`file_absent("path")\` — file does not exist
+- \`file_contains("path", "text")\` — file contains text
+- \`file_missing_text("path", "text")\` — file missing or lacks text
+- \`command("cmd")\` — shell command exits 0
+- \`never\` — task never completes (recurring)
 
 ## Context
 
@@ -1531,12 +1531,6 @@ Examine the ${FACTORY_DIR} repo. Apply TELOS to determine why it exists.  Write 
 # Purpose
 [Why this repository exists. What it enables. What breaks without it.]
 
-## Constituents
-[The essential parts. For each one, state its purpose in terms of the whole.]
-
-## Concerns
-[The defining properties that span the codebase. For each one, state its purpose in terms of the whole.]
-
 ## Measures
 [How you observe purpose being fulfilled better or worse. Every measure must include a method of observation.]
 
@@ -1545,8 +1539,6 @@ If you cannot determine purpose, write PURPOSE-BLOCKED.md explaining what you ex
 ## Done
 - \`file_exists("PURPOSE.md")\`
 - \`file_contains("PURPOSE.md", "# Purpose")\`
-- \`file_contains("PURPOSE.md", "## Constituents")\`
-- \`file_contains("PURPOSE.md", "## Concerns")\`
 - \`file_contains("PURPOSE.md", "## Measures")\`
 TASK
 
