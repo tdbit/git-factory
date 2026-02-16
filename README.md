@@ -88,17 +88,11 @@ cp /path/to/factory.sh .
 bash factory.sh
 ```
 
-First run bootstraps the agent, then prints:
-
-```
-factory: run ./factory to start
-```
-
-After that, just run `./factory` to resume.
+First run bootstraps and launches the agent immediately. After that, just run `./factory` to resume.
 
 ## How it works
 
-`factory.sh` bootstraps an isolated `.factory/` git repo inside your project, writes a Python runner and markdown instruction files, then launches an AI agent in headless mode. The agent reads your codebase, defines a Purpose framework (why this software exists), and uses that to drive all future work. Source code changes happen on isolated `factory/*` branches via git worktrees — your working tree is never touched.
+`factory.sh` bootstraps an isolated `.factory/` git repo inside your project, writes a Python runner (`factory.py`) and markdown instruction files (`CLAUDE.md`, `INITIATIVES.md`, `PROJECTS.md`, `TASKS.md`, `EPILOGUE.md`, `agents/PLANNER.md`, `agents/FIXER.md`), then launches an AI agent in headless mode. The agent reads your codebase, defines a Purpose framework (why this software exists), and uses that to drive all future work. Source code changes happen on isolated `factory/*` branches via git worktrees — your working tree is never touched.
 
 See **[DESIGN.md](DESIGN.md)** for the full design: bootstrap sequence, directory layout, purpose framework, work hierarchy, planning agent, and task system.
 
@@ -123,11 +117,10 @@ the full breakdown.
 
 The agent works in the foreground, streaming tool calls and costs to the terminal.
 
-**Dev mode**
+**Other commands**
 
 ```bash
-bash factory.sh dev          # tear down and re-bootstrap every time
-bash factory.sh reset        # tear down only
+bash factory.sh dump         # write all factory files to ./factory_dump/
 bash factory.sh help         # show help
 ```
 
@@ -145,7 +138,7 @@ All configuration is via environment variables — no config files.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FACTORY_CLAUDE_MODEL` | *(agent default)* | Override the Claude model |
+| `FACTORY_CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | Override the Claude model |
 | `FACTORY_CODEX_MODEL` | `gpt-5.2-codex` | Override the Codex model |
 | `FACTORY_CODEX_MODEL_FALLBACKS` | `gpt-5-codex,o3` | Comma-separated fallback models for Codex |
 | `FACTORY_HEARTBEAT_SEC` | `15` | Seconds between heartbeat messages during Codex runs |
@@ -168,10 +161,10 @@ No other dependencies. Everything is self-contained in `factory.sh`.
 - **Self-replacing installer** — `factory.sh` is a one-shot installer that replaces itself with a tiny launcher script. The original is preserved in `.factory/` for `./factory teardown` to restore.
 - **Headless agents** — Claude runs with `--dangerously-skip-permissions` in print mode; Codex runs with `exec --json`. No interactive prompts, no TUI.
 - **Local-only git ignore** — uses `.git/info/exclude` instead of `.gitignore` so factory artifacts never pollute your repo's tracked files.
-- **Autonomous planning** — when no tasks are ready, the runner reads `PLANNING.md` and invokes a planning agent that creates the next task following scarcity invariants.
-- **Failure handling** — when a task fails or completes with unmet conditions, the planning agent follows a structured failure analysis protocol (observe, diagnose, prescribe, retry) defined in `FAILURE.md`. Tasks track `stop_reason` and `status` in frontmatter so the agent can learn from what went wrong.
+- **Autonomous planning** — when no tasks are ready, the runner reads `agents/PLANNER.md` and invokes a planning agent that creates the next task following scarcity invariants.
+- **Failure handling** — when a task fails or completes with unmet conditions, the runner follows a structured failure analysis protocol (observe, diagnose, prescribe, retry) defined in `agents/FIXER.md`. Tasks track `stop_reason` and `status` in frontmatter so the agent can learn from what went wrong.
 - **Three-level work hierarchy** — initiatives, projects, and tasks provide structure without bureaucracy. Flat folders, frontmatter relationships, no nesting.
-- **Agent personas** — custom agent definitions in `agents/` let tasks run with specialized system prompts and tool permissions.
+- **Agent personas** — custom agent definitions in `agents/` let tasks run with specialized system prompts and tool permissions. Tasks reference agents via the `handler` frontmatter field.
 - **Teleological grounding** — the Purpose framework gives the agent a final cause. Every piece of work traces back to *why*, not just *what*. This is the difference between an agent that produces commits and one that produces progress.
 
 ## TODO (these bits don't really work yet)

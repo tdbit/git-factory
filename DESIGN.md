@@ -3,8 +3,8 @@
 ## Bootstrap sequence
 
 1. `factory.sh` creates `.factory/` as a standalone git repo (via `git init`) for factory metadata
-2. It writes a Python runner (`factory.py`), markdown instruction files (`CLAUDE.md`, `INITIATIVES.md`, `PROJECTS.md`, `TASKS.md`, `PLANNING.md`, `FAILURE.md`, `EPILOGUE.md`), and two chained bootstrap tasks into `.factory/`
-3. The runner launches the agent CLI in headless mode (Claude uses `--dangerously-skip-permissions`; Codex uses `exec --json`)
+2. It writes a Python runner (`factory.py`), markdown instruction files (`CLAUDE.md`, `INITIATIVES.md`, `PROJECTS.md`, `TASKS.md`, `EPILOGUE.md`, `agents/PLANNER.md`, `agents/FIXER.md`), and two chained bootstrap tasks into `.factory/`
+3. The runner launches the agent CLI in headless mode (Claude uses `--dangerously-skip-permissions -p --output-format stream-json`; Codex uses `exec --json`)
 4. On first run, the agent executes two chained bootstrap tasks: first it defines the factory's own Purpose, then it reads your repo and defines the repo's Purpose, Measures, and Tests
 5. After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
 6. For project tasks that modify source code, the runner creates git worktrees under `.factory/worktrees/` on `factory/*` branches in the source repo
@@ -19,20 +19,24 @@ your-repo/
   ./factory             # launcher (replaces factory.sh after bootstrap)
   .factory/             # standalone git repo, locally git-ignored
     factory.py          # python orchestrator
+    factory.sh          # preserved copy of original installer (for teardown restore)
     CLAUDE.md           # agent's operating instructions
     INITIATIVES.md      # initiative format spec
     PROJECTS.md         # project format spec
     TASKS.md            # task format spec
-    PLANNING.md         # planning agent instructions
-    FAILURE.md          # failure analysis protocol
     EPILOGUE.md         # project task epilogue template
+    PURPOSE.md          # purpose, measures, and tests (created by bootstrap task)
     config.json         # bootstrap config (provider, default branch, worktrees path)
+    .gitignore          # ignores state/, logs/, worktrees/
     agents/             # agent persona definitions (markdown)
+      PLANNER.md        # planning agent instructions
+      FIXER.md          # failure analysis protocol
     initiatives/        # high-level goals (YYYY-slug.md)
     projects/           # mid-level projects (YYYY-MM-slug.md)
     tasks/              # task queue (YYYY-MM-DD-slug.md)
     hooks/              # git hooks for the factory repo
-    state/              # runtime state (pid, run logs)
+      post-commit       # post-commit hook
+    state/              # runtime state (pid file, last run log)
     logs/               # agent run logs
     worktrees/          # source repo worktrees for project tasks
 ```
@@ -102,24 +106,24 @@ The system enforces focus by maintaining:
 
 ## Planning agent
 
-When no ready task exists, the runner automatically invokes a **planning agent** using the instructions in `.factory/PLANNING.md`. The planner:
+When no ready task exists, the runner automatically invokes a **planning agent** using the instructions in `.factory/agents/PLANNER.md`. The planner:
 
 1. Checks scarcity invariants
 2. Promotes or creates initiatives / projects as needed
 3. Creates exactly **one** new task per planning run
 4. Commits the task file to the factory repo
 
-The planning agent reads `INITIATIVES.md`, `PROJECTS.md`, and `TASKS.md` for format specs. Its instructions are editable after bootstrap — no need to re-extract the runner.
+The planning agent reads `INITIATIVES.md`, `PROJECTS.md`, and `TASKS.md` for format specs. Its instructions in `agents/PLANNER.md` are editable after bootstrap — no need to re-extract the runner.
 
 ## Failure handling and self-modification
 
-When a task fails or completes with unmet conditions, the runner marks it `status: stopped` with a `stop_reason` (`failed` or `incomplete`). The planning agent is then required to follow the failure analysis protocol in `.factory/FAILURE.md` before creating any new work.
+When a task fails or completes with unmet conditions, the runner marks it `status: stopped` with a `stop_reason` (`failed` or `incomplete`). The runner then invokes a failure review agent using the protocol in `.factory/agents/FIXER.md`, passing the task content, condition results, and last 50 lines of the run log as context.
 
 The protocol has four steps:
 
 1. **Observe** — read the task file, run log, and git diff to understand what actually happened
 2. **Diagnose** — identify which factory Measure (from `PURPOSE.md`) was violated and which Test should have caught it
-3. **Prescribe** — create a new task that targets a *factory system file* (`factory.py`, `CLAUDE.md`, `PLANNING.md`, etc.) to close the gap
+3. **Prescribe** — create a new task that targets a *factory system file* (`factory.py`, `CLAUDE.md`, `agents/PLANNER.md`, etc.) to close the gap
 4. **Retry** — only after the systemic fix is in place, create a new task for the original work
 
 This is the self-modifying part: the factory doesn't just retry failed work — it modifies its own instructions, runner code, or format specs to prevent the same class of failure from recurring. The failed task stays stopped. The fix task strengthens a Measure or adds a Test. The retry task benefits from the improved system.
@@ -141,9 +145,10 @@ Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each task has m
 ```markdown
 ---
 tools: Read,Write,Edit,Bash
+author: planner
 parent: projects/name.md
 previous: YYYY-MM-DD-other-task.md
-agent: agents/my-agent.md
+handler: agents/my-agent.md
 ---
 
 The prompt — what the agent should do. Be specific and concrete.
@@ -153,7 +158,7 @@ The prompt — what the agent should do. Be specific and concrete.
 Completion conditions checked by the runner after the agent finishes.
 One per line, all must pass.
 
-- `section_exists("## Purpose")`
+- `file_contains("PURPOSE.md", "# Purpose")`
 - `file_exists("src/config.py")`
 
 ## Context
@@ -170,9 +175,10 @@ How the agent should check its own work before committing.
 Author-set:
 
 - **tools** — which agent tools are allowed (default: `Read,Write,Edit,Bash,Glob,Grep`)
+- **author** — who created this task (e.g. `planner`, `fixer`, `factory`)
 - **parent** — project file this task advances (e.g. `projects/2026-auth-hardening.md`)
 - **previous** — another task file that must complete first (dependency chain)
-- **agent** — agent persona to use (e.g. `agents/my-agent.md`); see [Agents](#agents)
+- **handler** — agent persona to use (e.g. `agents/my-agent.md`); see [Agents](#agents)
 
 Runner-managed (set automatically):
 
@@ -188,11 +194,9 @@ Listed in the `## Done` section, one per line. All must pass.
 
 | Condition | Passes when |
 |---|---|
-| `section_exists("text")` | text appears in `.factory/CLAUDE.md` |
-| `no_section("text")` | text does not appear in `.factory/CLAUDE.md` |
-| `file_exists("path")` | file exists in the worktree |
+| `file_exists("path")` | file exists in the worktree (supports date glob patterns) |
 | `file_absent("path")` | file does not exist |
 | `file_contains("path", "text")` | file exists and contains text |
 | `file_missing_text("path", "text")` | file missing or doesn't contain text |
 | `command("cmd")` | shell command exits 0 |
-| `always` | never completes (recurring task) |
+| `never` | never completes (recurring task) |
