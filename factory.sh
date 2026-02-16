@@ -1611,9 +1611,19 @@ cat > "$1/factory" <<LAUNCH
 set -euo pipefail
 
 if [[ "\${1:-}" == "teardown" ]]; then
-  if [[ -f "$FACTORY_DIR/factory.sh" ]]; then
-    cp "$FACTORY_DIR/factory.sh" "$SOURCE_DIR/factory.sh"
+  echo "This will permanently remove:"
+  echo "  - The .factory/ itself (standalone repo)"
+  echo "  - All factory worktrees & factory/* branches"
+  echo "  - factory launcher"
+  echo ""
+  printf "Hit 'y' to confirm: "
+  read -r confirm
+  if [[ "\$confirm" != "y" ]]; then
+    echo -e "\033[33mfactory:\033[0m teardown cancelled"
+    exit 1
   fi
+  cp "$FACTORY_DIR/factory.sh" "$SOURCE_DIR/factory.sh"
+  cd "$SOURCE_DIR"
   exec bash "$SOURCE_DIR/factory.sh" teardown
 fi
 
@@ -1718,18 +1728,6 @@ case "${1:-}" in
     exit 0
     ;;
   teardown)
-    echo "This will permanently remove:"
-    echo "  - The .factory/ itself (standalone repo)"
-    echo "  - All factory worktrees & factory/* branches"
-    echo "  - factory launcher"
-    echo ""
-    printf "Hit 'y' to confirm: "
-    read -r confirm
-    if [[ "$confirm" != "y" ]]; then
-      rm -f "$SOURCE_DIR/factory.sh"  # clean up restored script
-      echo -e "\033[33mfactory:\033[0m teardown cancelled"
-      exit 1
-    fi
     teardown
     echo -e "\033[33mfactory:\033[0m teardown complete"
     exit 0
