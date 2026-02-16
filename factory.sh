@@ -65,9 +65,9 @@ def _get_default_branch():
     return _load_config().get("default_branch", "main")
 
 def project_slug(project_path):
-    """Extract slug from projects/YYYY-MM-slug.md -> slug."""
-    name = Path(project_path).stem  # YYYY-MM-slug
-    return re.sub(r"^\d{4}-\d{2}-", "", name)
+    """Extract slug from projects/NNNN-slug.md -> slug."""
+    name = Path(project_path).stem
+    return re.sub(r"^\d+-", "", name)
 
 def project_branch_name(project_path):
     return f"factory/{project_slug(project_path)}"
@@ -291,9 +291,8 @@ def update_task_meta(task, **kwargs):
 # --- completion checks ---
 
 def _glob_matches(base, pat):
-    glob_pat = pat.replace("YYYY-MM-DD", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]").replace("YYYY", "[0-9][0-9][0-9][0-9]")
-    if any(ch in glob_pat for ch in "*?[]"):
-        return any(base.glob(glob_pat))
+    if any(ch in pat for ch in "*?[]"):
+        return any(base.glob(pat))
     return (base / pat).exists()
 
 def check_one_condition(cond, target_dir=None):
@@ -671,8 +670,7 @@ def plan_next_task():
     if not planning_md.exists():
         log("agents/PLANNER.md not found")
         return False
-    today = time.strftime("%Y-%m-%d")
-    prompt = planning_md.read_text().replace("{today}", today)
+    prompt = planning_md.read_text()
     log("\033[33mplanner\033[0m started:")
     head_before = sh("git", "rev-parse", "HEAD")
     run_log = _open_run_log("planning")
@@ -1112,7 +1110,7 @@ cat > "$1/INITIATIVES.md" <<'INITIATIVES'
 
 Initiatives are high-level goals that define **what** the factory is trying to
 achieve. Each initiative is a markdown file in `initiatives/` named
-`YYYY-slug.md`.
+`NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
 
 ## Format
 
@@ -1166,14 +1164,14 @@ cat > "$1/PROJECTS.md" <<'PROJECTS'
 # Projects
 
 Projects are scoped deliverables that advance an initiative. Each project is a
-markdown file in `projects/` named `YYYY-MM-slug.md`.
+markdown file in `projects/` named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
 
 ## Format
 
 ```markdown
 ---
 author: planner
-parent: initiatives/YYYY-slug.md
+parent: initiatives/0001-slug.md
 status: backlog
 ---
 
@@ -1206,7 +1204,7 @@ acceptance criteria isn't ready to be created.
 
 - **status** — lifecycle state (backlog, active, suspended, completed, stopped)
 - **author** — who created this project (`planner`, `fixer`, or a custom name)
-- **parent** — initiative this project advances (example: `initiatives/2026-improve-testing.md`)
+- **parent** — initiative this project advances (example: `initiatives/0001-improve-testing.md`)
 PROJECTS
 }
 
@@ -1217,7 +1215,7 @@ cat > "$1/TASKS.md" <<'TASKS'
 
 A task is an atomic unit of work. It is the prompt given to an agent. The runner (`factory.py`) picks up tasks, runs them one at a time, and checks their completion conditions.
 
-Tasks live in `tasks/`. Each task is a markdown file named `YYYY-MM-DD-slug.md`.
+Tasks live in `tasks/`. Each task is a markdown file named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
 
 ## File format
 
@@ -1227,7 +1225,7 @@ tools: Read,Write,Edit,Glob,Grep
 author: planner
 handler: understand
 parent: projects/name.md
-previous: tasks/YYYY-MM-DD-other-task.md
+previous: tasks/0003-other-task.md
 ---
 
 What to do.
@@ -1249,8 +1247,8 @@ Self-checks before committing.
 - `tools` — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`). Overrides the agent's tools if set.
 - `author` — who created this task (`planner`, `fixer`, `factory`, or a custom name).
 - `handler` — which agent runs this task (e.g. `understand`, `planner`, `fixer`). Omit for default behavior.
-- `parent` — project this task advances (e.g. `projects/2026-01-auth-hardening.md`). Omit for factory maintenance tasks.
-- `previous` — task that must complete first (e.g. `tasks/2026-01-15-other-task.md`).
+- `parent` — project this task advances (e.g. `projects/0001-auth-hardening.md`). Omit for factory maintenance tasks.
+- `previous` — task that must complete first (e.g. `tasks/0003-other-task.md`).
 
 **Frontmatter (runner-managed — do not set these):**
 - `status` — lifecycle state
@@ -1486,7 +1484,7 @@ Work top-down. Only create what is missing.
 - Done conditions must be strict and automatable.
 - Chain tasks with `previous` when order matters.
 - Create all tasks needed to complete the project. Activate exactly one.
-- Today's date is {today}. Name files `{today}-slug.md`. Vary slugs for multiple tasks on the same day.
+- Name files `NNNN-slug.md`. Scan the target directory, find the highest existing number, and use the next one (start at 0001 if empty).
 - Always include `author: planner` in frontmatter.
 
 ### 4. Validate
@@ -1635,9 +1633,8 @@ EPILOGUE
 
 # --- writer: bootstrap tasks ---
 write_bootstrap_tasks() {
-local TODAY="$(date +%Y-%m-%d)"
-local FACTORY_TASK="$1/${TODAY}-define-factory-purpose.md"
-local REPO_TASK="$1/${TODAY}-define-repo-purpose.md"
+local FACTORY_TASK="$1/0001-define-factory-purpose.md"
+local REPO_TASK="$1/0002-define-repo-purpose.md"
 
 cat > "$FACTORY_TASK" <<TASK
 ---
@@ -1666,7 +1663,7 @@ TASK
 
 # Task 2: same template, different repo
 sed \
-  -e "s|^previous:$|previous: ${TODAY}-define-factory-purpose.md|" \
+  -e "s|^previous:$|previous: 0001-define-factory-purpose.md|" \
   -e "s|${FACTORY_DIR}|${SOURCE_DIR}|g" \
   "$FACTORY_TASK" > "$REPO_TASK"
 }

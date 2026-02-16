@@ -41,9 +41,9 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/agents/` | Agent persona definitions (markdown) |
 | `.factory/agents/PLANNER.md` | Planning agent instructions |
 | `.factory/agents/FIXER.md` | Failure analysis protocol |
-| `.factory/initiatives/` | High-level goals (YYYY-slug.md) |
-| `.factory/projects/` | Mid-level projects (YYYY-MM-slug.md) |
-| `.factory/tasks/` | Task queue (markdown files with YAML frontmatter) |
+| `.factory/initiatives/` | High-level goals (NNNN-slug.md) |
+| `.factory/projects/` | Mid-level projects (NNNN-slug.md) |
+| `.factory/tasks/` | Task queue (NNNN-slug.md, YAML frontmatter) |
 | `.factory/config.json` | Bootstrap config (provider, default branch, worktrees path) |
 | `.factory/state/` | Runtime state (pid file, last run log) |
 | `.factory/logs/` | Agent run logs |
@@ -78,7 +78,7 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 
 ## Task system
 
-Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each has YAML frontmatter (`tools`, `author`, `parent`, `previous`, `handler`) and runner-managed fields (`status`, `stop_reason`, `pid`, `session`, `commit`). Body contains markdown sections (`## Done`, `## Context`, `## Verify`).
+Tasks are markdown files in `tasks/` named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`). Projects and initiatives use the same scheme, each with independent counters. Each has YAML frontmatter (`tools`, `author`, `parent`, `previous`, `handler`) and runner-managed fields (`status`, `stop_reason`, `pid`, `session`, `commit`). Body contains markdown sections (`## Done`, `## Context`, `## Verify`).
 
 ### Completion conditions (in `## Done`)
 
