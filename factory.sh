@@ -945,7 +945,7 @@ Do not modify any files outside of these worktrees.
 
 When you complete tasks, your commits will be merged back to the source repo by the runner.
 
-Read \`$SOURCE_DIR/PURPOSE.md\` for the source repo's Purpose, Measures, and Tests —
+Read \`$SOURCE_DIR/PURPOSE.md\` for the source repo's Purpose and Measures —
 these define what "better" means and guide all planning and work.
 
 ## How tasks work
@@ -1218,12 +1218,9 @@ Both are real. Both may warrant investigation. But they answer different questio
 Why does this entity exist? What becomes true when it succeeds? If it were gone, what would break?
 
 ### 3. Determine measures
-How would you observe that purpose is being fulfilled *better or worse*? Every measure must include a method of observation — a command, a metric, or a concrete thing you can point at.
+How would you observe that purpose is being fulfilled *better or worse*? Measures are abstract indicators of progress toward the purpose. They may be imperfect, but they must be observable and should be directional not just binary. They should indicate the degree to which the entity fulfills its purpose, not just whether it does or doesn't.
 
-Prefer marginal measures over binary ones. Purpose is not pass/fail — it is fulfilled to a degree. "Tests pass" is binary. "Time from change to confident deploy" is marginal — it tells you whether you're getting better. "Error messages exist" is binary. "Percentage of errors that tell the user what to do next" is marginal.
-
-Measures are the observable face of purpose. "The purpose of X is to…" is incomplete without "…and you'd know it's succeeding *more* when…"
-
+Measures are the observable face of purpose. "The purpose of X is to…" is incomplete without "…and you'd know it's succeeding *more* if…". These are not tests, conditions, or requirements.
 ## Halt Condition
 
 Before articulating purpose, answer internally:
@@ -1239,8 +1236,7 @@ If you cannot answer at least three of these concretely, stop. State what you ex
 - Does every purpose statement describe an end, not a structure or composition?
 - Would something that depends on this entity recognize the statement as true?
 - Could the statement apply to any entity unchanged? If so, too generic. Cut it.
-- Does every measure track degree, not just pass/fail?
-- Does every measure include a method of observation?
+- Does every measure indicate direction or degree, not just pass/fail?
 
 ## Rules
 
@@ -1267,7 +1263,7 @@ you run, work through these steps in order.
 
 # Before You Begin
 
-Read `{source_repo}/PURPOSE.md` — the source repo's Purpose, Measures, and Tests.
+Read `{source_repo}/PURPOSE.md` — the source repo's Purpose and Measures.
 
 The planning hierarchy maps to the source repo's purpose hierarchy:
 
@@ -1420,7 +1416,7 @@ Test is missing or inadequate. Your job is to identify which ones and fix
 the system.
 
 Read `PURPOSE.md` before proceeding — every step below references
-the factory's own Purpose, Measures, and Tests.
+the factory's own Purpose and Measures.
 
 ## Step 1: Observe
 
