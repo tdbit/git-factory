@@ -1090,13 +1090,40 @@ Hard constraints. Bullets. Short. Things that override everything else.
 
 Rules are what the agent must never do or must always do regardless of context. If it's situational, it belongs in Method.
 
+## How agents read tasks
+
+Every agent interprets tasks the same way. This protocol is the shared contract between task and agent.
+
+### Reading order
+
+1. **Done conditions first.** This is what success looks like. Read these before the prompt. You are working backward from the end state.
+2. **Prompt.** This is what to do. Execute it fully. It is not optional, aspirational, or negotiable.
+3. **Context.** This is why. Read it for orientation. Do not treat it as additional instructions.
+4. **Verify.** This is your self-check. Apply these before committing.
+
+### Execution rules
+
+- **Do the prompt. All of it.** Partial completion is failure.
+- **Do only the prompt.** Do not add work the prompt didn't ask for. Do not improve adjacent code. Do not refactor while you're here. Scope is the prompt and nothing else.
+- **Work backward from Done.** The done conditions define success. If your work doesn't satisfy them, you're not done. If you're unsure what the prompt means, the done conditions disambiguate.
+- **Commit when done.** Stage your changes. Write a commit message that describes what changed, not the task name. Stop.
+- **Halt if stuck.** If you cannot complete the prompt, stop. Do not produce partial work and hope. Do not silently skip parts. State what you attempted, what blocked you, and stop.
+
+### What agents must never do
+
+- Modify the task file. The runner manages task status and metadata.
+- Start the next task. You do one task. The loop handles sequencing.
+- Interpret Context as instruction. Context explains why, not what.
+- Exceed the prompt scope. Adjacent improvements are future tasks, not bonus work.
+
 ## Principles
 
 - **An agent is a method, not a persona.** Don't describe character, temperament, or attitude. Describe how it works.
-- **The task carries the what. The agent carries the how.** If you're putting specific instructions about a particular job in the agent, it belongs in the task prompt.
+- **The task carries the what. The agent carries the how.** If you're putting specific instructions about a particular job in the agent, it belongs in the task prompt. If you're putting method into a task prompt, it belongs in the agent.
 - **Capabilities are separate from method.** What you can do vs how you do it. An agent might have Write access but only use it at the end. Capabilities state the former, method states the latter.
 - **Halt conditions are not optional.** An agent that can't say "I'm stuck" will never be stuck — it'll just be wrong.
 - **Validation catches the agent's own failure modes.** Write validation for the mistakes this specific agent is likely to make, not generic quality checks.
+- **Interpretation is uniform.** Every agent reads tasks the same way. Done first, prompt second, context for orientation, verify before commit. No exceptions.
 AGENTS
 }
 
