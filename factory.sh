@@ -145,6 +145,20 @@ def log(msg):
 def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
 
+def _acquire_pid():
+    """Write pid file, returning False if another instance is running."""
+    pid_file = STATE_DIR / "factory.pid"
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+            log(f"another instance is running (pid {old_pid})")
+            return False
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # stale pid file, safe to overwrite
+    pid_file.write_text(str(os.getpid()) + "\n")
+    return True
+
 def _cleanup_pid():
     pid_file = STATE_DIR / "factory.pid"
     try:
@@ -288,6 +302,22 @@ def update_task_meta(task, **kwargs):
             lines.append(f"{key}: {val}")
     path.write_text("---\n" + "\n".join(lines) + "\n---" + body)
 
+def _next_id(directory):
+    nums = [int(m.group(1)) for f in directory.glob("*.md")
+            if (m := re.match(r"^(\d+)-", f.name))]
+    return (max(nums) + 1) if nums else 1
+
+def _write_task(slug, body, handler=None, tools=None):
+    name = f"{str(_next_id(TASKS_DIR)).zfill(4)}-{slug}"
+    path = TASKS_DIR / f"{name}.md"
+    fm = ["author: runner", f"tools: {tools or DEFAULT_TOOLS}", "status: backlog"]
+    if handler:
+        fm.append(f"handler: {handler}")
+    path.write_text("---\n" + "\n".join(fm) + "\n---\n\n" + body)
+    sh("git", "add", str(path.relative_to(ROOT)))
+    sh("git", "commit", "-m", f"New Task: {name}")
+    return name
+
 # --- completion checks ---
 
 def _glob_matches(base, pat):
@@ -333,13 +363,13 @@ def check_one_condition(cond, target_dir=None):
     return False
 
 def check_done(done, target_dir=None):
-    if not done:
-        return False
+    if not done:  # no conditions = always done
+        return True
     return all(check_one_condition(c, target_dir) for c in done)
 
 def check_done_details(done, target_dir=None):
-    if not done:
-        return False, []
+    if not done:  # no conditions = always done
+        return True, []
     results = [(c, check_one_condition(c, target_dir)) for c in done]
     return all(ok for _, ok in results), results
 
@@ -347,7 +377,7 @@ def next_task():
     tasks = load_tasks()
     # skip tasks that are terminal — completed/stopped live in git history
     eligible = [t for t in tasks if t["status"] not in ("completed", "stopped")]
-    done_map = {t["_path"].name: check_done(t["done"]) for t in eligible}
+    done_map = {t["_path"].name: (bool(t["done"]) and check_done(t["done"])) for t in eligible}
     for t in eligible:
         if done_map.get(t["_path"].name):
             continue
@@ -555,7 +585,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     proc = subprocess.Popen(
         [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
          "--output-format", "stream-json",
-         full_prompt, "--allowedTools", allowed_tools, *model_arg],
+         "--allowedTools", allowed_tools, *model_arg, "--", full_prompt],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
@@ -663,114 +693,6 @@ def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log
         return run_codex(prompt, allowed_tools, agent, cli_path, cwd=cwd, run_log=run_log)
     return run_claude(prompt, allowed_tools, agent, cli_path, cli_name, cwd=cwd, run_log=run_log)
 
-# --- task planning ---
-
-def plan_next_task():
-    planning_md = ROOT / "agents" / "PLANNER.md"
-    if not planning_md.exists():
-        log("agents/PLANNER.md not found")
-        return False
-    prompt = planning_md.read_text()
-    log("\033[33mplanner\033[0m started:")
-    head_before = sh("git", "rev-parse", "HEAD")
-    run_log = _open_run_log("planning")
-    try:
-        ok, result = run_agent(prompt, run_log=run_log)
-    finally:
-        run_log.close()
-    if not ok:
-        log("planning failed")
-        return False
-    try:
-        # squash any agent commits back to pre-planning state
-        head_after = sh("git", "rev-parse", "HEAD")
-        if head_after != head_before:
-            sh("git", "reset", "--soft", head_before)
-        sh("git", "add", "-A")
-        porcelain = sh("git", "status", "--porcelain")
-        info = format_result(result)
-        if not porcelain:
-            log(f"planner finished (nothing to commit) \033[2m{info}\033[0m" if info else "planner finished (nothing to commit)")
-            log("")
-            return True
-        counts = {"initiatives": 0, "projects": 0, "tasks": 0}
-        for line in porcelain.splitlines():
-            path = line[3:]
-            for key in counts:
-                if path.startswith(key + "/"):
-                    counts[key] += 1
-        parts = [f"{n} {k}" for k, n in counts.items() if n]
-        msg = f"updated: {', '.join(parts)}" if parts else "updated"
-        sh("git", "commit", "-m", msg)
-        log(f"  → {msg} \033[2m{info}\033[0m" if info else f"  → {msg}")
-    except subprocess.CalledProcessError:
-        log(f"planner finished (nothing to commit) \033[2m{info}\033[0m" if info else "planner finished (nothing to commit)")
-    log("")
-    return True
-
-def handle_failure(task, details):
-    """Run the planner with failure analysis context."""
-    failure_md = ROOT / "agents" / "FIXER.md"
-    if not failure_md.exists():
-        log("agents/FIXER.md not found — skipping failure review")
-        return
-    name = task["name"]
-    log(f"\033[31mfailure\033[0m review: {name}")
-
-    task_content = task["_path"].read_text()
-    run_log_path = STATE_DIR / "last_run.jsonl"
-    run_log_tail = ""
-    if run_log_path.exists():
-        lines = run_log_path.read_text().splitlines()
-        run_log_tail = "\n".join(lines[-50:])
-
-    condition_report = "\n".join(
-        f"  {'✓' if ok else '✗'} {cond}" for cond, ok in (details or [])
-    )
-
-    task_rel = task["_path"].relative_to(ROOT)
-    prompt = failure_md.read_text() + "\n\n"
-    prompt += f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
-    prompt += f"## Condition Results\n\n{condition_report}\n\n"
-    if run_log_tail:
-        prompt += f"## Run Log (last 50 lines)\n\n```\n{run_log_tail}\n```\n"
-
-    head_before = sh("git", "rev-parse", "HEAD")
-    run_log = _open_run_log("failure-review")
-    try:
-        ok, result = run_agent(prompt, run_log=run_log)
-    finally:
-        run_log.close()
-    if not ok:
-        log("  failure review crashed")
-        log("")
-        return
-    try:
-        head_after = sh("git", "rev-parse", "HEAD")
-        if head_after != head_before:
-            sh("git", "reset", "--soft", head_before)
-        sh("git", "add", "-A")
-        porcelain = sh("git", "status", "--porcelain")
-        info = format_result(result)
-        if not porcelain:
-            log(f"  no changes \033[2m{info}\033[0m" if info else "  no changes")
-            log("")
-            return
-        counts = {"initiatives": 0, "projects": 0, "tasks": 0}
-        for line in porcelain.splitlines():
-            path = line[3:]
-            for key in counts:
-                if path.startswith(key + "/"):
-                    counts[key] += 1
-        parts = [f"{n} {k}" for k, n in counts.items() if n]
-        msg = f"updated: {', '.join(parts)}" if parts else "updated"
-        sh("git", "commit", "-m", msg)
-        log(f"  → {msg} \033[2m{info}\033[0m" if info else f"  → {msg}")
-    except subprocess.CalledProcessError:
-        info = format_result(result)
-        log(f"  no changes \033[2m{info}\033[0m" if info else "  no changes")
-    log("")
-
 # --- main loop ---
 
 def run():
@@ -778,16 +700,8 @@ def run():
     if not cli:
         return
 
-    pid_file = STATE_DIR / "factory.pid"
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)  # check if process is alive
-            log(f"another instance is running (pid {old_pid})")
-            return
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass  # stale pid file, safe to overwrite
-    pid_file.write_text(str(os.getpid()) + "\n")
+    if not _acquire_pid():
+        return
 
     def commit_task(task, message, scoop=False, work_dir=None):
         """Commit task metadata on the factory branch.
@@ -807,13 +721,18 @@ def run():
         sh("git", "add", str(rel))
         sh("git", "commit", "-m", message)
 
+    just_planned = False
     while True:
         task = next_task()
         if task is None:
-            if not plan_next_task():
-                log("stopping — planning failed")
+            if just_planned:
+                log("stopping — no tasks after planning")
                 return
+            _write_task("plan", "", handler="planner",
+                        tools="Read,Write,Edit,Glob,Grep,Bash")
+            just_planned = True
             continue
+        just_planned = False
         name = task["name"]
         log(f"\033[32mtask\033[0m started: {name}")
 
@@ -885,8 +804,20 @@ def run():
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             log("")
             return
-        if not agent_committed:
-            log("agent made no commits")
+
+        # capture agent commit subjects before squash
+        summary_lines = []
+        if agent_committed:
+            try:
+                summary_lines = subprocess.check_output(
+                    ["git", "log", "--format=%s", f"{head_before}..{head_after}"],
+                    cwd=work_dir, stderr=subprocess.STDOUT
+                ).decode().strip().splitlines()
+            except subprocess.CalledProcessError:
+                pass
+        else:
+            log("  agent made no commits")
+
         # squash agent commits into the runner's commit (factory tasks only)
         if agent_committed and not is_project_task:
             subprocess.check_output(
@@ -905,13 +836,33 @@ def run():
             info = format_result(result)
             log(f"  ✗ conditions: failed \033[2m{info}\033[0m" if info else "  ✗ conditions not met")
             if details:
-                for cond, ok in details:
-                    mark = "✓" if ok else "✗"
+                for cond, ok_cond in details:
+                    mark = "✓" if ok_cond else "✗"
                     log(f"    {mark} {cond}")
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             log(f"  → task: {task['_path'].relative_to(ROOT)}")
-            log("")
-            handle_failure(task, details)
+
+        # log summary of agent commits
+        for line in summary_lines:
+            log(f"    {line}")
+        log("")
+
+        # write fixer task on incomplete (not for planner/fixer tasks)
+        if not passed and task.get("handler") not in ("planner", "fixer"):
+            task_content = task["_path"].read_text()
+            task_rel = task["_path"].relative_to(ROOT)
+            cond_report = "\n".join(
+                f"  {'✓' if ok_cond else '✗'} {cond}" for cond, ok_cond in (details or []))
+            run_log_tail = ""
+            rlp = STATE_DIR / "last_run.jsonl"
+            if rlp.exists():
+                run_log_tail = "\n".join(rlp.read_text().splitlines()[-50:])
+            body = f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
+            body += f"## Condition Results\n\n{cond_report}\n\n"
+            if run_log_tail:
+                body += f"## Run Log (last 50 lines)\n\n```\n{run_log_tail}\n```\n"
+            _write_task("fix", body, handler="fixer",
+                        tools="Read,Write,Edit,Glob,Grep,Bash")
 
 if __name__ == "__main__":
     run()
