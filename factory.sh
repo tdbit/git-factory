@@ -1029,8 +1029,8 @@ achieve. Each initiative is a markdown file in `initiatives/` named
 
 ```markdown
 ---
-status: backlog
 author: planner
+status: backlog
 ---
 
 ## Problem
@@ -1083,9 +1083,9 @@ markdown file in `projects/` named `YYYY-MM-slug.md`.
 
 ```markdown
 ---
-status: backlog
 author: planner
 parent: initiatives/YYYY-slug.md
+status: backlog
 ---
 
 How this project advances the parent initiative. What slice of the initiative's
@@ -1192,7 +1192,7 @@ write_telos_md() {
 cat > "$1/TELOS.md" <<'TELOS'
 # TELOS.md
 
-You are TELOS. Your divine purpose is to divine purpose.  You have one operation: determine the reason an entity — an object, a system, a process, an attribute — exists, and to what end.
+You are TELOS. You divine purpose. You have one operation: determine the reason an entity — an object, a system, a process, an attribute — exists, and to what end.
 
 For a given entity X, you determine and articulate:
 - "The purpose of X is to…"
@@ -1201,11 +1201,8 @@ For a given entity X, you determine and articulate:
 
 ## Process
 
-### 1. Divine purpose of the whole
-Why does this entity exist? What becomes true when it succeeds? If it were gone, what would break?
-
-### 2. Investigate its constituents
-Examine the entity through two lenses:
+### 1. Examine causes
+Investigate the entity through two lenses:
 - **Formal → Concerns** — What makes this entity what it is and not something else? Its defining characteristics, qualities, properties, cross-cutting conventions. These aren't parts — they're properties the entity has that span its constituents.
 - **Material → Constituents** — What is this entity actually made of? Its concrete parts, substance, stuff.
 
@@ -1217,12 +1214,15 @@ When investigating, distinguish **essential constituents** from **incidental con
 
 Both are real. Both may warrant investigation. But they answer different questions, and confusing them obscures purpose.
 
-### 3. Divine purpose of each constituent
-Apply the operation to each constituent surfaced in step 2. Why does *this part* exist? The answer is always in terms of the whole's purpose from step 1.
+### 2. Divine purpose
+Why does this entity exist? What becomes true when it succeeds? If it were gone, what would break?
 
-"The purpose of [constituent] is to… because [purpose of the whole] depends on it."
+### 3. Determine measures
+How would you observe that purpose is being fulfilled *better or worse*? Every measure must include a method of observation — a command, a metric, or a concrete thing you can point at.
 
-This is the recursion. Any constituent can itself become the entity, and the process begins again.
+Prefer marginal measures over binary ones. Purpose is not pass/fail — it is fulfilled to a degree. "Tests pass" is binary. "Time from change to confident deploy" is marginal — it tells you whether you're getting better. "Error messages exist" is binary. "Percentage of errors that tell the user what to do next" is marginal.
+
+Measures are the observable face of purpose. "The purpose of X is to…" is incomplete without "…and you'd know it's succeeding *more* when…"
 
 ## Halt Condition
 
@@ -1236,10 +1236,11 @@ If you cannot answer at least three of these concretely, stop. State what you ex
 
 ## Validation
 
-- Does every statement describe an end, not a structure or composition?
+- Does every purpose statement describe an end, not a structure or composition?
 - Would something that depends on this entity recognize the statement as true?
 - Could the statement apply to any entity unchanged? If so, too generic. Cut it.
-- Can every constituent's purpose trace to the whole's purpose? If not, it may be incidental — note it as such or cut it.
+- Does every measure track degree, not just pass/fail?
+- Does every measure include a method of observation?
 
 ## Rules
 
@@ -1520,152 +1521,44 @@ local TODAY="$(date +%Y-%m-%d)"
 local FACTORY_TASK="$1/${TODAY}-define-factory-purpose.md"
 local REPO_TASK="$1/${TODAY}-define-repo-purpose.md"
 
-cat > "$FACTORY_TASK" <<'TASK'
+cat > "$FACTORY_TASK" <<TASK
 ---
-tools: Read,Write,Edit,Glob,Grep
 author: factory
+handler: telos
+previous:
+status: backlog
+tools: Read,Write,Edit,Glob,Grep
 ---
 
-Examine this repository. Read its key files to understand what this software
-does, how it is structured, and where its friction is.
+Examine the ${FACTORY_DIR} repo. Apply TELOS to determine why it exists.  Write your findings to PURPOSE.md in the repository's root:
 
-Create `PURPOSE.md` in this directory with three sections: **Purpose**,
-**Measures**, and **Tests**.
+# Purpose
+[Why this repository exists. What it enables. What breaks without it.]
 
-Each section must include three levels of abstraction: **Existential**, **Strategic**, and **Tactical**.
+## Constituents
+[The essential parts. For each one, state its purpose in terms of the whole.]
 
-- **Existential** — the real-world outcome this software exists to produce. Describe what becomes true for its users or domain when it is succeeding. Keep this concrete and outcome-focused, not about code aesthetics.  For example "X exists to...", "Y's purpose to allow/enable/let...", "Z was built so that...". This is the anchor for everything else — if you can't fill this out, you don't understand why this software exists.
-- **Strategic** — the kinds of improvements that compound over time in this repository. These define direction and leverage, not individual fixes.  These should connect code qualities to the real-world outcome in Existential purpose. For example "X needs to be modular so that...", "Y is important because...", "Z is designed to have/avoid/prevent/make..." 
-.". 
-- **Tactical** — specific, near-term improvements grounded in observable friction in this codebase. These should reference real files, workflows, or behaviors.
+## Concerns
+[The defining properties that span the codebase. For each one, state its purpose in terms of the whole.]
 
-All levels must remain software-focused and grounded in what you observe in the repository. Avoid philosophical framing, abstract mission language, or organizational themes.
+## Measures
+[How you observe purpose being fulfilled better or worse. Every measure must include a method of observation.]
 
-Keep the sections tight. Do not write essays.
-
-Bullet guidance:
-- **Existential**: 3–5 bullets.
-- **Strategic**: 5–8 bullets.
-- **Tactical**: 5–10 bullets.
-
-Favor precision over volume. Each bullet should express a distinct idea.
-
-### Purpose
-
-The Purpose section defines what "better" means for this codebase.
-
-**Existential Purpose** (3-5 bullets) — Define why this software exists in
-terms of the real-world outcome it produces. What is true for its users or its
-domain when this software is succeeding? If it's a tool for nurses: "Nurses
-spend more time with patients and less time on paperwork." If it's a developer
-tool: "Developers ship changes confidently with fewer manual steps." If it's an
-automation system: "Routine decisions happen without human intervention." Keep
-it concrete and tied to the people or problem the software serves. Do not
-describe the character of the codebase here — that belongs in strategic purpose.
-
-**Strategic Purpose** (5-8 bullets) — Define what properties this codebase
-must have to keep fulfilling its existential purpose over time. Each bullet
-should connect a codebase quality to the real-world outcome it protects. Not
-"reduce complexity in core paths" — "complexity in core paths makes it unsafe
-to change behavior users depend on." Not "improve test coverage" — "untested
-interfaces erode confidence in the changes that deliver [existential purpose]."
-The question is always: why does this property matter for the people or problem
-the software serves?
-
-**Tactical Purpose** (5-10 bullets) — Define what specific friction in this
-codebase currently undermines the existential or strategic purpose, and why it
-matters now. Name real files, modules, or workflows. Each bullet should connect
-observable friction to the purpose it harms. Not "simplify the config module" —
-"the config module's indirection obscures what the system actually does,
-undermining [strategic purpose bullet]." Not "reduce test flakiness" —
-"flaky tests in X cause developers to ignore failures, eroding [strategic
-purpose bullet]." The question is always: why does this specific area need
-attention, traced back to purpose?
-
----
-
-### Measures
-
-The Measures section defines signals of progress. Every measure must include
-how it is observed — a command, a metric, or a concrete thing you can point at.
-
-**Existential Measures** (3-5 bullets) — Indicators that the software is
-fulfilling its reason for existing. These are not about code health — they are
-about the real-world outcome the system was built to produce. If the repo is a
-tool for healthcare nurses, examples might be: nurses spend less time on
-charting, fewer tasks require manual data entry, shift handoffs take less time.
-If it's a developer tool: developers ship faster, debugging takes fewer steps,
-onboarding a new team member is easier. Tie these directly to the existential
-purpose — what would be true in the world if this software were succeeding?
-
-**Strategic Measures** (5-8 bullets) — Medium-term progress signals. Examples:
-reduced complexity in core modules, faster test runs, fewer build steps,
-clearer documentation, less coupling between subsystems.
-
-**Tactical Measures** (5-10 bullets) — Concrete, checkable signals tied
-directly to the tactical purpose. Each one should answer: "How do I know
-this specific thing got better?" Examples: tests pass, lint clean, CI time
-decreased by N seconds, fewer TODOs in module X, setup runs in fewer steps,
-error message for Y now tells the user what to do, endpoint Z responds in
-under N ms.
-
----
-
-### Tests
-
-The Tests section contains "purpose gate" questions. Ask yourself these
-questions every time you make a change.
-
-**Existential Tests** (3-5 bullets) — Does this change move the needle on the
-real-world outcome the software exists to produce? Does it make the user's life
-concretely better? Would the person this software serves notice or care about
-this change? Does it bring the system closer to fulfilling its reason for
-existing?
-
-**Strategic Tests** (5-8 bullets) — Does this compound future improvements?
-Does it reduce brittleness? Does it remove duplication? Does it improve
-clarity in the most-used paths?
-
-**Tactical Tests** (5-10 bullets) — Specific, answerable questions about
-immediate outcomes. These should reference concrete commands, user actions, and
-the tactical purpose and measures directly. Examples:
-
-- What commands did you run to verify this works?
-- Do all tests pass? Which test suites did you run?
-- Does this make it easier for a user to [specific action]?
-- Does this make [specific operation] faster or more reliable?
-- Is the diff minimal for the behavior change achieved?
-- Does this satisfy [specific tactical purpose item] according to
-  [specific tactical measure]?
-- Did you check that [specific thing] did not regress?
-- Can a new contributor understand this change without extra context?
-- Does the error output tell the user what went wrong and what to do?
+If you cannot determine purpose, write PURPOSE-BLOCKED.md explaining what you examined, what was ambiguous, and what questions need a human answer.
 
 ## Done
-
-- `file_contains("PURPOSE.md", "# Purpose")`
-- `file_contains("PURPOSE.md", "# Measures")`
-- `file_contains("PURPOSE.md", "# Tests")`
-
-## Verify
-
-- Confirm `PURPOSE.md` contains Purpose, Measures, and Tests
-  sections with Existential, Strategic, and Tactical subsections.
-- Confirm each subsection has the right number of bullets (3-5 existential, 5-8 strategic, 5-10 tactical).
-- Read the sections back and check they are grounded in the actual repo, not
-  generic platitudes.
+- \`file_exists("PURPOSE.md")\`
+- \`file_contains("PURPOSE.md", "# Purpose")\`
+- \`file_contains("PURPOSE.md", "## Constituents")\`
+- \`file_contains("PURPOSE.md", "## Concerns")\`
+- \`file_contains("PURPOSE.md", "## Measures")\`
 TASK
 
 # Task 2: same template, different repo
-cp "$FACTORY_TASK" "$REPO_TASK"
-sed -i '' \
-  -e '/^tools:/a\
-previous: '"${TODAY}"'-define-factory-purpose.md' \
-  -e "s|Examine this repository|Examine the source repository at \`$SOURCE_DIR\`|" \
-  -e "s|in this directory|in the source repo root (\`$SOURCE_DIR/\`)|" \
-  -e "s|file_contains(\"PURPOSE.md\"|file_contains(\"$SOURCE_DIR/PURPOSE.md\"|" \
-  -e "s|Confirm \`PURPOSE.md\`|Confirm \`$SOURCE_DIR/PURPOSE.md\`|" \
-  "$REPO_TASK"
+sed \
+  -e "s|^previous:$|previous: ${TODAY}-define-factory-purpose.md|" \
+  -e "s|${FACTORY_DIR}|${SOURCE_DIR}|g" \
+  "$FACTORY_TASK" > "$REPO_TASK"
 }
 
 # --- writer: ./factory launcher ---
