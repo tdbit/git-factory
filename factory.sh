@@ -932,70 +932,44 @@ Automated software factory for \`$REPO\`.
 Source repo: \`$SOURCE_DIR\`
 Factory dir: \`$FACTORY_DIR\`
 
-You are a coding agent operating inside \`.factory/\`, a standalone git repo that
-tracks factory metadata (tasks, projects, initiatives, agents). This directory
-is separate from the source repo.
+You are a coding agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata. The source repo is separate — project-specific work happens in worktrees under \`worktrees/\`, each on a branch prefixed \`factory/\`.
 
-Project-specific tasks for the source repo will have separate worktrees created
-under \`worktrees/\` each with its own branch prefixed with \`factory/\` in the
-source repo. This is where you will do the actual code changes related to the
-source repo.
+## Read these first
 
-Do not modify any files outside of these worktrees.
+- \`AGENTS.md\` — how agents are structured and how they read tasks.
+- \`TASKS.md\` — how tasks are structured and how they are drafted.
+- \`INITIATIVES.md\`, \`PROJECTS.md\` — format specs for the work hierarchy.
 
-When you complete tasks, your commits will be merged back to the source repo by the runner.
+## Understanding
 
-Read \`$SOURCE_DIR/PURPOSE.md\` for the source repo's Purpose and Measures —
-these define what "better" means and guide all planning and work.
+The factory maintains understanding of two entities:
 
-## How tasks work
+- \`understanding/factory/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the factory itself. The fixer reads these.
+- \`understanding/source/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the source repo. The planner reads these.
 
-You are given one task at a time by the runner (\`factory.py\`). The task prompt
-is your entire instruction for that run. You MUST follow these rules:
+## Work model
 
-1. **Do the task.** Complete what the task prompt asks.
-2. **Commit your work.** When you are done, \`git add\` and \`git commit\` the
-   files you changed. Use a short, descriptive commit message that summarizes
-   what you did — not the task name, not a prefix, just what changed.
-3. **Branch naming.** If you create branches for task work, use names prefixed
-   with \`factory/\` (for example \`factory/fix-task-parser\`).
-4. **Do not modify this file beyond what a task asks.** If a task tells you to
-   add sections to \`CLAUDE.md\`, do that. Otherwise leave it alone.
-5. **Stop when done.** Do not loop, do not start the next task, do not look
-   for more work. Complete your task, commit, and stop.
+Three flat folders. No nesting. Relationships are defined by frontmatter fields.
 
-## Work Model
+- \`initiatives/\` — high-level goals
+- \`projects/\` — scoped deliverables under an initiative
+- \`tasks/\` — atomic units of work under a project
 
-All work is organized in three flat folders. There is no folder nesting.
-Relationships are defined by frontmatter fields.
+### Lifecycle
 
-- \`initiatives/\` — high-level goals (see \`INITIATIVES.md\`)
-- \`projects/\` — scoped deliverables under an initiative (see \`PROJECTS.md\`)
-- \`tasks/\` — atomic units of work under a project (see \`TASKS.md\`)
+All items use the same states:
 
-### Lifecycle (Uniform Everywhere)
+- \`backlog\` → \`active\` → \`completed\`
+- \`active\` → \`suspended\` (intentionally paused, will resume)
+- \`active\` → \`stopped\` (ended, will not resume)
 
-All initiatives, projects, and tasks use the same lifecycle states:
+There is no \`failed\` state. Failure is \`status: stopped\` with \`stop_reason: failed\`.
 
-- \`backlog\` — defined but not active
-- \`active\` — currently in play
-- \`suspended\` — intentionally paused
-- \`completed\` — finished successfully
-- \`stopped\` — ended and will not resume
-
-There is no \`failed\` state.
-Failure is represented as:
-
-\`\`\`yaml
-status: stopped
-stop_reason: failed
-\`\`\`
-
-### Structural Relationships
+### Relationships
 
 - \`parent:\` links a task → project or project → initiative.
 - \`previous:\` defines sequential dependency between tasks.
-- No \`parent\` means the task is a **factory maintenance task**.
+- No \`parent:\` means the task is a factory maintenance task.
 
 ### Scarcity Invariants (Must Always Hold)
 
@@ -1004,15 +978,19 @@ stop_reason: failed
 - At most **3 active tasks**
 - At most **1 active unparented (factory) task**
 
-If these constraints are violated, fix them before creating new work.
+### Read-set rule
 
-### Read-Set Rule
+You may only read items with \`status\` in (\`active\`, \`backlog\`, \`suspended\`). Completed and stopped work lives in git history.
 
-When planning or selecting work, you may only read items with:
+## Agent rules
 
-status ∈ (active, backlog, suspended)
+1. **Do the task.** Complete what the prompt asks. Fully.
+2. **Do only the task.** Do not add work the prompt didn't ask for.
+3. **Commit your work.** \`git add\` and \`git commit\` with a short message describing what changed.
+4. **Stop when done.** Do not loop. Do not start the next task. Do not look for more work.
+5. **Do not modify this file** unless a task explicitly asks you to.
 
-Completed work lives in git history. It does not remain active context.
+For the full interpretation protocol, see AGENTS.md → "How agents read tasks."
 CLAUDE
 }
 
