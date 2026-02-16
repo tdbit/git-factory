@@ -180,7 +180,7 @@ def get_agent_cli():
 # --- helpers ---
 
 def _parse_frontmatter(text):
-    """Split text into (meta_dict, body_string) or None if no valid frontmatter."""
+    """Split text into (meta_dict, body_string) or None if invalid - key: value pairs only, not YAML."""
     if not text.startswith("---"):
         return None
     parts = text.split("---", 2)
@@ -643,7 +643,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
 
 
 def format_result(result):
-    """Format a result event dict into a short string like '130.2s, $0.3683'."""
+    """Format a result event dict into a short string like '(130.2s, $0.3683)'."""
     if not result:
         return ""
     parts = []

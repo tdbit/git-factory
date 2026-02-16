@@ -177,7 +177,7 @@ I was thinking it would be better if we had a pre-/post- commit hook that kicks 
 
 I thought we could have different agents for different tasks but really there's only one atm.  Right now (per Claude):
 
-Agent definitions live in `agents/` as markdown files with optional YAML frontmatter. They define a system prompt and tool permissions that are prepended to the task prompt when referenced via the `agent:` frontmatter field.
+Agent definitions live in `agents/` as markdown files with optional key: value frontmatter. They define a system prompt and tool permissions that are prepended to the task prompt when referenced via the `agent:` frontmatter field.
 
 ```markdown
 ---
