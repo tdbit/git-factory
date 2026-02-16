@@ -1208,66 +1208,125 @@ PROJECTS
 # --- writer: TASKS.md ---
 write_tasks_md() {
 cat > "$1/TASKS.md" <<'TASKS'
-# Tasks
+# TASKS.md
 
-Tasks are atomic units of work that act as the prompt for the agent. Each task is a markdown file in `tasks/` named `YYYY-MM-DD-slug.md`. The runner (`factory.py`) picks up tasks, runs them one at a time, and checks their completion conditions.
+A task is an atomic unit of work. It is the prompt given to an agent. The runner (`factory.py`) picks up tasks, runs them one at a time, and checks their completion conditions.
 
-## Format
+Tasks live in `tasks/`. Each task is a markdown file named `YYYY-MM-DD-slug.md`.
+
+## File format
 
 ```markdown
 ---
 tools: Read,Write,Edit,Glob,Grep
 author: planner
+handler: understand
 parent: projects/name.md
-previous: YYYY-MM-DD-other-task.md
+previous: tasks/YYYY-MM-DD-other-task.md
 ---
 
-What to do. This is the prompt — the agent's instruction for this run.
-Be specific and concrete. Name files, functions, and behaviors.
-
-## Done
-
-Completion conditions checked by the runner after the agent finishes.
-One condition per line. All must pass. Supported conditions:
-
-- \`file_exists("path")\` — file exists in the worktree
-- \`file_absent("path")\` — file does not exist
-- \`file_contains("path", "text")\` — file contains text
-- \`file_missing_text("path", "text")\` — file missing or lacks text
-- \`command("cmd")\` — shell command exits 0
-- \`never\` — task never completes (recurring)
+What to do.
 
 ## Context
 
-Why this task exists. What purpose or measure it serves.
+Why this task exists.
 
 ## Verify
 
-How the agent should check its own work before committing.
+Self-checks before committing.
+
+## Done
+
+- `file_exists("path")`
 ```
 
-## Frontmatter
+**Frontmatter (author-set):**
+- `tools` — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`). Overrides the agent's tools if set.
+- `author` — who created this task (`planner`, `fixer`, `factory`, or a custom name).
+- `handler` — which agent runs this task (e.g. `understand`, `planner`, `fixer`). Omit for default behavior.
+- `parent` — project this task advances (e.g. `projects/2026-01-auth-hardening.md`). Omit for factory maintenance tasks.
+- `previous` — task that must complete first (e.g. `tasks/2026-01-15-other-task.md`).
 
-Author-set fields:
+**Frontmatter (runner-managed — do not set these):**
+- `status` — lifecycle state
+- `stop_reason` — required if `status: stopped`
+- `pid` — process ID of the runner
+- `session` — agent session ID
+- `commit` — HEAD commit hash when the task completed
 
-- **tools** — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`)
-- **author** — who created this task (e.g. `planner`, `fixer`, or another agent's name)
-- **parent** — project this task advances (example: `projects/2026-01-auth-hardening.md`). Omit for factory maintenance tasks.
-- **previous** — filename of a task that must complete first (dependency)
+## Task structure
 
-Runner-managed fields (set automatically, do not write these yourself):
+### Prompt (the body before any `##` section)
 
-- **status** — lifecycle state
-- **stop_reason** — required if `status: stopped`
-- **pid** — process ID of the runner
-- **session** — Claude session ID
-- **commit** — HEAD commit hash when the task completed
+What to do. This is the agent's mandate for this run.
 
-## Creating follow-up tasks
+- **One outcome.** A task describes a single thing that will be different when it's done. "Write PRINCIPLES.md for the factory repo" is one outcome. "Check which files exist and create tasks for the missing ones" is a program — break it up.
+- **Concrete targets.** Name files, functions, behaviors, paths. Not "improve the config" — "move the database URL from `config.ts` to `env.ts`."
+- **What, not how.** The prompt says what must change. The agent's definition covers how. Do not put procedure, method, or conditional logic in the prompt.
+- **Completable in one session.** If an agent can't finish it in one run, the task is too big. Split it.
 
-If your task creates follow-up tasks, set the `previous` field in the new
-task's frontmatter to the filename of the current task so the runner knows
-the dependency order.
+The prompt is a mandate. The agent must do what it says, fully, or halt.
+
+### Done
+
+Completion conditions checked by the runner after the agent finishes. These are the contract — the only thing that determines success or failure.
+
+Supported conditions (one per line, all must pass):
+- `file_exists("path")` — file exists in the worktree
+- `file_absent("path")` — file does not exist
+- `file_contains("path", "text")` — file contains text
+- `file_missing_text("path", "text")` — file missing or lacks text
+- `command("cmd")` — shell command exits 0
+- `never` — task never completes (recurring)
+
+Rules for done conditions:
+- **Mechanically verifiable.** No human judgment. The runner checks these automatically.
+- **Necessary and sufficient.** If the conditions pass, the task is done. If the task is done, the conditions pass. No gap in either direction.
+- **Matched to the prompt.** If the prompt says "write X" and the done condition checks for Y, the task is broken.
+- **Fewer is better.** 1–3 conditions for most tasks. If you need 10, you have 3 tasks.
+
+### Context
+
+Why this task exists. Orientation, not instruction.
+
+- Trace to a purpose, a measure, or a parent project.
+- The agent reads this to understand why the work matters.
+- **Not additional instructions.** If you're putting procedural steps or extra requirements in Context, they belong in the prompt. Agents are trained to read Context for orientation, not to execute it.
+
+### Verify
+
+Self-checks the agent applies to its own work before committing.
+
+- "Read back PURPOSE.md and confirm every statement passes the 'to what end?' test."
+- "Run the test suite and confirm no regressions."
+- **Not additional work.** "Also update the README" is a second task or part of the prompt, not a verify step.
+
+## What doesn't belong in a task
+
+- **Method.** How to do the work. That's the agent's job.
+- **Conditional logic.** "If X then do Y, otherwise do Z." That's two tasks, or the agent's judgment.
+- **Self-modification.** "Edit this task's frontmatter." Tasks don't modify themselves. The runner manages status.
+- **Sequencing.** "After this, create a task for..." Use `previous` for dependencies. If work needs to spawn follow-up tasks, that's a planner concern, not a task concern.
+- **Vague outcomes.** "Improve," "clean up," "make better." These aren't outcomes. Name the specific thing that will be different.
+
+## Drafting test
+
+Before creating a task, ask:
+
+- Can I state what's different when this is done in one sentence?
+- Can I write done conditions that fully capture that sentence?
+- Does the prompt contain only what, not how?
+- Could any agent with the right capabilities complete this, not just one specific agent?
+
+If any answer is no, the task needs rework.
+
+## Principles
+
+- **A task is one thing.** If it has conditional branches, it's multiple tasks. If it has sequencing logic, it's a plan. If it modifies itself, it's broken.
+- **Done conditions are the contract.** Not the prompt, not the context, not the verify section. The runner only checks done conditions. Everything else is for the agent.
+- **The task carries the what. The agent carries the how.** Method, procedure, and technique do not belong in task prompts. If the prompt tells the agent how to do its work, the instructions belong in the agent definition instead.
+- **Context is orientation, not instruction.** It explains why the work matters. Agents read it but do not execute it.
+- **Scope is sacred.** A task does what the prompt says and nothing else. Adjacent improvements, refactors, and "while I'm here" fixes are future tasks.
 TASKS
 }
 
