@@ -8,6 +8,7 @@ Autonomous software factory that embeds a Claude Code agent inside a git repo. A
 bash factory.sh              # first run: bootstrap + launch
 bash factory.sh [claude|codex]  # bootstrap with explicit provider
 ./factory                    # resume where it left off
+bash factory.sh bootstrap    # bootstrap only (no launch)
 bash factory.sh dump         # write all factory files to ./factory_dump/
 bash factory.sh teardown     # tear down only (with confirmation)
 bash factory.sh help         # show help
@@ -32,14 +33,14 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `factory.sh` | One-shot installer (replaced by `./factory` after first run) |
 | `.factory/` | Standalone git repo for factory metadata |
 | `.factory/factory.py` | Python orchestrator |
-| `.factory/CLAUDE.md` | Agent's operating instructions (Purpose/Measures/Tests) |
+| `.factory/PROLOGUE.md` | Prologue prepended to all task prompts |
+| `.factory/EPILOGUE.md` | Project task epilogue template |
 | `.factory/specs/AGENTS.md` | Agent format spec |
 | `.factory/specs/INITIATIVES.md` | Initiative format spec |
 | `.factory/specs/PROJECTS.md` | Project format spec |
 | `.factory/specs/TASKS.md` | Task format spec |
-| `.factory/PURPOSE.md` | Purpose, Measures, and Tests (created by bootstrap task) |
-| `.factory/EPILOGUE.md` | Project task epilogue template |
-| `.factory/agents/` | Agent persona definitions (markdown) |
+| `.factory/agents/` | Agent definitions (markdown) |
+| `.factory/agents/UNDERSTAND.md` | Understanding agent instructions |
 | `.factory/agents/PLANNER.md` | Planning agent instructions |
 | `.factory/agents/FIXER.md` | Failure analysis protocol |
 | `.factory/initiatives/` | High-level goals (NNNN-slug.md) |
@@ -59,23 +60,25 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 3. **Default branch detection** — from `origin/HEAD`, falling back to `main`/`master`/`HEAD`
 4. **Dependency checks** — `PROVIDER` and `python3`
 5. **Functions**:
-   - `write_runner()` — embedded `factory.py` (~880 lines)
-   - `write_claude_md()` — agent operating instructions
-   - `write_initiatives_md()` — initiative format spec
-   - `write_projects_md()` — project format spec
-   - `write_tasks_md()` — task format spec
-   - `write_planner_md()` — planning agent instructions (written to `agents/`)
+   - `write_runner()` — embedded `factory.py` (~960 lines)
+   - `write_prologue_md()` — prologue prepended to all task prompts
+   - `write_agents_md()` — agent format spec (written to `specs/`)
+   - `write_initiatives_md()` — initiative format spec (written to `specs/`)
+   - `write_projects_md()` — project format spec (written to `specs/`)
+   - `write_tasks_md()` — task format spec (written to `specs/`)
+   - `write_understand_md()` — understanding agent (written to `agents/`)
+   - `write_planner_md()` — planning agent (written to `agents/`)
    - `write_fixer_md()` — failure analysis protocol (written to `agents/`)
    - `write_epilogue_md()` — project task epilogue template
-   - `write_bootstrap_tasks()` — two chained bootstrap tasks (factory purpose → repo purpose)
    - `write_launcher()` — `./factory` launcher script
    - `write_hook()` — post-commit hook (written to `hooks/`)
    - `setup_excludes()` — add `.factory/` and `/factory` to `.git/info/exclude`
    - `remove_script()` — delete `factory.sh` after bootstrap
    - `write_files()` — write all factory files to a given directory
-   - `setup_repo()` — git init `.factory/`, set hooks path, initial commits
+   - `setup_repo()` — git init `.factory/`, set hooks path, initial commit
    - `teardown()` — remove `.factory/`, worktrees, `factory/*` branches, launcher
-6. **Command dispatch** — `case` handles `help`, `teardown`, `dump`, default (resume/bootstrap+launch)
+   - `bootstrap()` — orchestrates setup: excludes → files → repo → launcher → remove script
+6. **Command dispatch** — `case` handles `help`, `bootstrap`, `teardown`, `dump`, default (resume/bootstrap+launch)
 
 ## Task system
 
