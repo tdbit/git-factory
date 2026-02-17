@@ -47,6 +47,7 @@ AGENTS_DIR = ROOT / "agents"
 INITIATIVES_DIR = ROOT / "initiatives"
 PROJECTS_DIR = ROOT / "projects"
 STATE_DIR = ROOT / "state"
+LOGS_DIR = ROOT / "logs"
 # parent repo — ROOT is .factory/, so parent is one level up
 PARENT_REPO = ROOT.parent
 DEFAULT_TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
@@ -127,6 +128,8 @@ def build_epilogue(task, project_dir):
     return epilogue_md.read_text().replace("{project_dir}", str(project_dir))
 
 _has_progress = False
+_run_log_file = None
+_ansi_regex = re.compile(r"\033\[[0-9;]*m")
 
 def _show_progress(line):
     global _has_progress
@@ -141,6 +144,9 @@ def log(msg):
         sys.stdout.flush()
         _has_progress = False
     print(msg, flush=True)
+    if _run_log_file:
+        _run_log_file.write(_ansi_regex.sub("", msg) + "\n")
+        _run_log_file.flush()
 
 def sh(*cmd):
     return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
@@ -702,6 +708,12 @@ def run():
 
     if not _acquire_pid():
         return
+
+    global _run_log_file
+    LOGS_DIR.mkdir(exist_ok=True)
+    log_path = LOGS_DIR / time.strftime("%Y-%m-%d_%H%M%S.log")
+    _run_log_file = open(log_path, "w")
+    atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
 
     def commit_task(task, message, scoop=False, work_dir=None):
         """Commit task metadata on the factory branch.
