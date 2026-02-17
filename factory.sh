@@ -338,10 +338,12 @@ def _plan_briefing(tasks):
     """Build a rich task body for the planner from current factory state."""
     sections = []
 
-    # --- Queue ---
+    # --- Categorize ---
     completed = [t for t in tasks if t["status"] == "completed"]
     stopped = [t for t in tasks if t["status"] == "stopped"]
     remaining = [t for t in tasks if t["status"] not in ("completed", "stopped")]
+
+    # --- Queue ---
     lines = ["## Queue", ""]
     for label, group in [("Completed", completed), ("Stopped", stopped), ("Remaining", remaining)]:
         if group:
@@ -703,7 +705,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
 
     model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
-    max_turns = os.environ.get("FACTORY_MAX_TURNS", "8").strip()
+    max_turns = os.environ.get("FACTORY_MAX_TURNS", "16").strip()
     model_arg = ["--model", model_name]
     log(f"  → using: {cli_name or 'claude'} \033[2m({model_name})\033[0m")
 
@@ -1410,7 +1412,7 @@ Completion conditions checked by the runner after the agent finishes. These are 
 Supported conditions (one per line, all must pass):
 - `file_exists("path")` — file exists in the worktree
 - `file_absent("path")` — file does not exist
-- `file_contains("path", "text")` — file contains text
+- `file_contains("path", "text")` — file exists and contains text
 - `file_missing_text("path", "text")` — file missing or lacks text
 - `command("cmd")` — shell command exits 0
 - `never` — task never completes (recurring)
@@ -1419,6 +1421,8 @@ Rules for done conditions:
 - **Mechanically verifiable.** No human judgment. The runner checks these automatically.
 - **Necessary and sufficient.** If the conditions pass, the task is done. If the task is done, the conditions pass. No gap in either direction.
 - **Matched to the prompt.** If the prompt says "write X" and the done condition checks for Y, the task is broken.
+- **Content, not formatting.** `file_contains` does exact substring matching. Never include markdown syntax (`#`, `**`, `-`) in the match text — agents vary heading levels and formatting. Match the words, not the decoration.
+- **No redundant conditions.** `file_contains` implies `file_exists` — never use both on the same path.
 - **Fewer is better.** 1–3 conditions for most tasks. If you need 10, you have 3 tasks.
 TASKS
 }
@@ -1544,7 +1548,9 @@ You do not commit. The runner commits your work.
 
 ## Method
 
-Your task body contains the current queue, active initiatives and projects, scarcity counts, and format references. It may also contain an Understanding section from a prior understand task. Start there.
+Your task body contains the current queue, active initiatives and projects, scarcity counts, and format references. It may also contain an Understanding section from a prior understand task.
+
+**Before anything else:** If your task body does not contain `## Understanding`, create a `handler: understand` task in `tasks/` scoped to whatever you need to understand and stop. Do not read specs, do not explore, do not proceed to the steps below. You cannot plan without understanding.
 
 ### 1. Assess
 
@@ -1558,11 +1564,7 @@ If any task has `stop_reason: failed` or was marked incomplete, follow `agents/F
 
 Cascade finished work upward: all tasks under a project completed → mark the project `completed`. All projects under an initiative completed → mark the initiative `completed`.
 
-### 3. Understand
-
-If your task body contains `## Understanding`, use it as context for planning. If it does not, and you cannot plan concretely because you lack understanding of the source repo (or a specific part of it), create a `handler: understand` task in `tasks/` scoped to the target. Then stop — do not plan without understanding. If understanding is already present, do not create another understand task.
-
-### 4. Fill
+### 3. Fill
 
 Work top-down. Only create what is missing.
 
@@ -1574,7 +1576,7 @@ Work top-down. Only create what is missing.
 
 Read the spec files listed in Format References for field requirements and naming conventions.
 
-### 5. Validate
+### 4. Validate
 
 Confirm scarcity invariants hold and at least one task is ready to run (active, unblocked, conditions unmet). If not, investigate and fix.
 
