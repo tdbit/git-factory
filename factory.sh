@@ -383,7 +383,8 @@ def next_task():
     tasks = load_tasks()
     # skip tasks that are terminal — completed/stopped live in git history
     eligible = [t for t in tasks if t["status"] not in ("completed", "stopped")]
-    done_map = {t["_path"].name: (bool(t["done"]) and check_done(t["done"])) for t in eligible}
+    done_map = {t["_path"].name: True for t in tasks if t["status"] == "completed"}
+    done_map.update({t["_path"].name: (bool(t["done"]) and check_done(t["done"])) for t in eligible})
     for t in eligible:
         if done_map.get(t["_path"].name):
             continue
