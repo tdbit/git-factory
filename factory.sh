@@ -264,9 +264,12 @@ def parse_task(path):
     if "done" in sections:
         for line in sections["done"].splitlines():
             line = line.strip().lstrip("- ")
-            if line and re.match(r'`?(\w+)\(', line):
-                done_lines.append(line.strip('`'))
-            elif line == "never" or line == "`never`":
+            m = re.match(r'`([^`]+)`', line)
+            if m:
+                done_lines.append(m.group(1))
+            elif line and re.match(r'(\w+)\(', line):
+                done_lines.append(line)
+            elif line == "never":
                 done_lines.append("never")
     name = path.stem
     return {
