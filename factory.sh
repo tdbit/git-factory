@@ -44,8 +44,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TASKS_DIR = ROOT / "tasks"
 AGENTS_DIR = ROOT / "agents"
-INITIATIVES_DIR = ROOT / "initiatives"
-PROJECTS_DIR = ROOT / "projects"
 STATE_DIR = ROOT / "state"
 LOGS_DIR = ROOT / "logs"
 # parent repo — ROOT is .factory/, so parent is one level up
@@ -305,6 +303,8 @@ def update_task_meta(task, **kwargs):
         key, _, _ = line.partition(":")
         existing[key.strip()] = i
     for key, val in kwargs.items():
+        if val is None:
+            continue
         if key in existing:
             lines[existing[key]] = f"{key}: {val}"
         else:
@@ -807,6 +807,10 @@ def run():
         session_id = (result or {}).get("session_id")
         if session_id:
             update_task_meta(task, session=session_id)
+        duration_ms = (result or {}).get("duration_ms")
+        cost_usd = (result or {}).get("cost_usd") or (result or {}).get("total_cost_usd")
+        duration = f"{duration_ms/1000:.1f}s" if duration_ms else None
+        cost = f"${cost_usd:.4f}" if cost_usd else None
 
         # check if agent made any commits
         head_after = subprocess.check_output(
@@ -822,7 +826,7 @@ def run():
                     subprocess.check_output(["git", "clean", "-fd"], cwd=work_dir, stderr=subprocess.STDOUT)
                 except Exception:
                     pass
-            update_task_meta(task, status="stopped", stop_reason="failed")
+            update_task_meta(task, status="stopped", stop_reason="failed", duration=duration, cost=cost)
             commit_task(task, f"Failed Task: {name}")
             info = format_result(result)
             log(f"  ✗ task crashed \033[2m{info}\033[0m" if info else "  ✗ task crashed")
@@ -851,12 +855,12 @@ def run():
         passed, details = check_done_details(task["done"], target_dir=work_dir)
         commit_work_dir = work_dir if is_project_task else None
         if passed:
-            update_task_meta(task, status="completed", commit=head_after)
+            update_task_meta(task, status="completed", commit=head_after, duration=duration, cost=cost)
             commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=commit_work_dir)
             info = format_result(result)
             log(f"  ✓ conditions: passed \033[2m{info}\033[0m" if info else "  ✓ all conditions passed")
         else:
-            update_task_meta(task, status="stopped", stop_reason="incomplete")
+            update_task_meta(task, status="stopped", stop_reason="incomplete", duration=duration, cost=cost)
             commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=commit_work_dir)
             info = format_result(result)
             log(f"  ✗ conditions: failed \033[2m{info}\033[0m" if info else "  ✗ conditions not met")
