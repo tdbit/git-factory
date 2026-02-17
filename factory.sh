@@ -217,7 +217,7 @@ def _parse_frontmatter(text):
 
 def load_agent(name):
     """Load an agent definition from agents/{name}.md."""
-    path = AGENTS_DIR / f"{name}.md"
+    path = AGENTS_DIR / f"{name.upper()}.md"
     if not path.exists():
         return None
     text = path.read_text()
@@ -912,12 +912,12 @@ You are a coding agent operating inside \`.factory/\`, a standalone git repo tha
 - \`specs/PROJECTS.md\` — format specs for scoped deliverables under initiatives.
 - \`specs/TASKS.md\` — format specs for atomic work items under projects.
 
-## Understanding
+## Knowledge
 
-The factory maintains understanding of two entities:
+The factory maintains knowledge of two entities:
 
-- \`understanding/factory/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the factory itself. The fixer reads these.
-- \`understanding/source/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the source repo. The planner reads these.
+- \`knowledge/factory/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the factory itself. The fixer reads these.
+- \`knowledge/source/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the source repo. The planner reads these.
 
 ## Work model
 
@@ -1119,7 +1119,7 @@ What friction, gap, or limitation exists in the codebase right now.
 
 What is true when this initiative succeeds. The end state, not the work.
 
-- Connect to a specific bullet in PURPOSE.md (Existential or Strategic Purpose).
+- Connect to a specific bullet in PURPOSE.md.
 - Not "we will add tests" — "developers can refactor core modules confidently because every public interface has contract tests."
 - One initiative, one outcome. If the outcome has "and" in it, you may have two initiatives.
 
@@ -1135,7 +1135,7 @@ What is in and what is out. Initiatives without boundaries expand forever.
 How you know it's working. Observable signals.
 
 - Commands you can run, metrics you can check, behaviors you can demonstrate.
-- Draw from Existential or Strategic Measures in the source repo's PURPOSE.md.
+- Draw from Measures in the source repo's PURPOSE.md.
 - If you can't point to a specific measure, the initiative isn't grounded.
 
 ## What doesn't belong in an initiative
@@ -1205,7 +1205,7 @@ How this project advances the parent initiative.
 How this project advances the parent initiative. Orientation for the agent creating tasks.
 
 - What slice of the initiative's problem space it addresses.
-- Which Strategic or Tactical Purpose bullets it serves.
+- Which constituent in PARTS.md it addresses and what purpose it serves.
 - How it relates to sibling projects, if any exist.
 
 ### Deliverables
@@ -1222,7 +1222,7 @@ Testable criteria, one per deliverable. Each answers "how do I verify this deliv
 
 - Must map to automatable Done conditions (the same condition types tasks use: `file_exists`, `file_contains`, `command`, etc.).
 - No human judgment. "Code is cleaner" is not checkable. "Linter passes with zero warnings" is.
-- Connect to Strategic or Tactical Measures in PURPOSE.md.
+- Connect to Measures in PURPOSE.md.
 
 ### Scope
 
@@ -1473,7 +1473,7 @@ You plan work. You are invoked when no ready task exists.
 ## Capabilities
 
 - Read all files in the factory repo: initiatives, projects, tasks, and agent definitions
-- Read the source repo's PURPOSE.md, PARTS.md, and PRINCIPLES.md
+- Read \`knowledge/source/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md)
 - Run commands in the source repo to examine actual state
 - Write and edit initiative, project, and task files
 - Update frontmatter status on existing items
@@ -1482,7 +1482,7 @@ You do not commit. The runner commits your work.
 
 ## Method
 
-Read `specs/INITIATIVES.md`, `specs/PROJECTS.md`, and `specs/TASKS.md` for format specs. Read the source repo's PURPOSE.md, PARTS.md, and PRINCIPLES.md for orientation.
+Read \`specs/INITIATIVES.md\`, \`specs/PROJECTS.md\`, and \`specs/TASKS.md\` for format specs. Read \`knowledge/source/PURPOSE.md\`, \`knowledge/source/PARTS.md\`, and \`knowledge/source/PRINCIPLES.md\` for orientation.
 
 ### 1. Assess
 
@@ -1509,10 +1509,10 @@ Cascade finished work upward:
 Work top-down. Only create what is missing.
 
 **Initiatives** — If no active initiative exists:
-- Read PURPOSE.md. Identify the highest-leverage gap between current state and purpose.
+- Read \`knowledge/source/PURPOSE.md\`. Identify the highest-leverage gap between current state and purpose.
 - Write the Problem section from evidence — run commands, read files, find concrete problems in the source repo.
-- Outcome must connect to a specific bullet in PURPOSE.md.
-- Measures must be observable and drawn from PURPOSE.md's Measures section.
+- Outcome must connect to a specific bullet in \`knowledge/source/PURPOSE.md\`.
+- Measures must be observable and drawn from \`knowledge/source/PURPOSE.md\`'s Measures section.
 - Create 1–3 backlog initiatives. Activate exactly one.
 
 **Projects** — If the active initiative has no active project:
@@ -1540,13 +1540,13 @@ Confirm before finishing:
 
 ## Halt Condition
 
-If you cannot trace new work to a specific bullet in PURPOSE.md, do not create it. If PURPOSE.md is missing or empty, create no work — write a note explaining that planning is blocked until purpose is established.
+If you cannot trace new work to a specific bullet in \`knowledge/source/PURPOSE.md\`, do not create it. If \`knowledge/source/PURPOSE.md\` is missing or empty, create no work — write a note explaining that planning is blocked until purpose is established.
 
 ## Validation
 
 For every item you create or activate:
 
-- Can you trace it to a specific bullet in PURPOSE.md? Initiative → purpose of the whole. Project → purpose of a constituent or concern. Task → a specific observable change.
+- Can you trace it to a specific bullet in \`knowledge/source/PURPOSE.md\`? Initiative → purpose of the whole. Project → purpose of a constituent or concern. Task → a specific observable change.
 - Does it have concrete, testable success criteria?
 - Is it the highest-leverage thing at its level?
 - If a senior engineer reviewed it, would the problem statement, deliverables, and acceptance criteria hold up?
@@ -1558,7 +1558,7 @@ For the plan as a whole:
 
 ## Rules
 
-- Every initiative traces to PURPOSE.md. Every project advances an initiative. Every task delivers a project artifact. No line, no work.
+- Every initiative traces to \`knowledge/source/PURPOSE.md\`. Every project traces to a constituent in \`knowledge/source/PARTS.md\`. Every task delivers a project artifact. No line, no work.
 - Scarcity invariants: exactly 1 active initiative, at most 2 active projects, at most 3 active tasks, at most 1 active unparented task. Scarcity governs active items, not backlog.
 - No vague initiatives. "Improve code quality" is not a problem statement. Name the specific gap, with evidence from the source repo.
 - No kitchen-sink projects. Decompose into independent, shippable slices.
@@ -1569,7 +1569,6 @@ For the plan as a whole:
 - Never create tasks with `handler: planner`. Planning is triggered automatically by the runner when the task queue empties. Use the `previous` field to sequence dependent work — don't insert plan tasks as waypoints.
 - No copy-paste structure. Each initiative addresses a different problem — the structure reflects that.
 PLANNER
-sed -i '' "s|{source_repo}|$SOURCE_DIR|g" "$1/PLANNER.md"
 }
 
 # --- writer: agents/FIXER.md ---
@@ -1588,7 +1587,7 @@ You diagnose failures and fix the system that produced them.
 
 - Read task files, run logs, and git diffs of agent output
 - Read all factory-internal files: factory.py, agent definitions, format specs, CLAUDE.md
-- Read the source repo's PURPOSE.md, PARTS.md, and PRINCIPLES.md
+- Read \`knowledge/factory/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md) and \`knowledge/source/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md)
 - Run commands to examine state
 - Write and edit factory-internal files
 - Create new task files
@@ -1597,7 +1596,7 @@ You do not redo the failed work. You do not modify or reactivate stopped tasks. 
 
 ## Method
 
-You are invoked when a task stops with `stop_reason: failed` or `stop_reason: incomplete`. Read PURPOSE.md before proceeding.
+You are invoked when a task stops with \`stop_reason: failed\` or \`stop_reason: incomplete\`. Read \`knowledge/factory/PURPOSE.md\` before proceeding.
 
 ### 1. Observe
 
@@ -1612,7 +1611,7 @@ Gather facts:
 
 Identify what went wrong at the system level.
 
-Read the Measures in PURPOSE.md. The failure violated at least one — find it. Then ask: what should have caught this before or during the task, and why didn't it?
+Read the Measures in \`knowledge/factory/PURPOSE.md\`. The failure violated at least one — find it. Then ask: what should have caught this before or during the task, and why didn't it?
 
 - No relevant check exists → that's the gap.
 - A check exists but missed the failure → the check is inadequate.
@@ -1623,8 +1622,8 @@ Read the Measures in PURPOSE.md. The failure violated at least one — find it. 
 Create a new task that closes the gap:
 
 - Include `author: fixer` in frontmatter.
-- Target a factory-internal file — `factory.py`, `CLAUDE.md`, an agent definition, a format spec. Not the source repo.
-- The fix must either strengthen the violated measure or add the check that should have caught the failure. Connect it to a specific bullet in PURPOSE.md.
+- Target a factory-internal file — \`factory.py\`, \`CLAUDE.md\`, an agent definition, a format spec. Not the source repo.
+- The fix must either strengthen the violated measure or add the check that should have caught the failure. Connect it to a specific bullet in \`knowledge/factory/PURPOSE.md\`.
 - Done conditions verify the system change, not the original deliverable.
 
 The failed task stays stopped.
@@ -1643,7 +1642,7 @@ If the failure cannot be traced to a system gap — the agent had clear instruct
 
 - Did you read the log and diff before forming a theory? If you diagnosed without observing, start over.
 - Does your fix target a factory-internal file, not the source repo?
-- Can you name the specific measure in PURPOSE.md that was violated?
+- Can you name the specific measure in \`knowledge/factory/PURPOSE.md\` that was violated?
 - Does the fix task have Done conditions that verify the system change?
 - Will this fix prevent the same failure mode, or just this specific failure?
 
@@ -1652,7 +1651,7 @@ If the failure cannot be traced to a system gap — the agent had clear instruct
 - Never retry without diagnosing. The same system produces the same failure.
 - Never create symptomatic fixes. "Add a note telling the agent to be careful" puts the burden on the task, not the system. If an agent can ignore an instruction, fix the system.
 - Never skip observation. No log, no diagnosis.
-- Never create a fix that doesn't trace to a specific measure in PURPOSE.md. If you can't name the measure, you haven't diagnosed the failure.
+- Never create a fix that doesn't trace to a specific measure in \`knowledge/factory/PURPOSE.md\`. If you can't name the measure, you haven't diagnosed the failure.
 - Never modify or reactivate the failed task. It stays stopped. New work goes in new tasks.
 FIXER
 }
@@ -1677,10 +1676,7 @@ EPILOGUE
 
 # --- writer: bootstrap tasks ---
 write_bootstrap_tasks() {
-local FACTORY_TASK="$1/0001-define-factory-purpose.md"
-local REPO_TASK="$1/0002-define-repo-purpose.md"
-
-cat > "$FACTORY_TASK" <<TASK
+cat > "$1/0000-understand-factory.md" <<TASK
 ---
 author: factory
 handler: understand
@@ -1689,27 +1685,44 @@ status: backlog
 tools: Read,Write,Edit,Glob,Grep
 ---
 
-Examine the ${FACTORY_DIR} repo. Apply UNDERSTAND to determine why it exists.  Write your findings to PURPOSE.md in the repository's root:
+Examine the ${FACTORY_DIR} repo. Write all three knowledge files to \`knowledge/factory/\`:
 
-# Purpose
-[Why this repository exists. What it enables. What breaks without it.]
+1. \`knowledge/factory/PRINCIPLES.md\` — the constraints, conventions, and rules this repo follows.
+2. \`knowledge/factory/PARTS.md\` — the constituents that compose this repo and how they relate.
+3. \`knowledge/factory/PURPOSE.md\` — why this repo exists, what it enables, and how to measure fulfillment.
 
-## Measures
-[How you observe purpose being fulfilled better or worse. Every measure must include a method of observation.]
-
-If you cannot determine purpose, write PURPOSE-BLOCKED.md explaining what you examined, what was ambiguous, and what questions need a human answer.
+Follow the method in \`agents/UNDERSTAND.md\`. Work in order: principles, then parts, then purpose.
 
 ## Done
-- \`file_exists("PURPOSE.md")\`
-- \`file_contains("PURPOSE.md", "# Purpose")\`
-- \`file_contains("PURPOSE.md", "## Measures")\`
+- \`file_contains("knowledge/factory/PRINCIPLES.md", "# Principles")\`
+- \`file_contains("knowledge/factory/PARTS.md", "# Parts")\`
+- \`file_contains("knowledge/factory/PURPOSE.md", "# Purpose")\`
+- \`file_contains("knowledge/factory/PURPOSE.md", "## Measures")\`
 TASK
 
-# Task 2: same template, different repo
-sed \
-  -e "s|^previous:$|previous: 0001-define-factory-purpose.md|" \
-  -e "s|${FACTORY_DIR}|${SOURCE_DIR}|g" \
-  "$FACTORY_TASK" > "$REPO_TASK"
+cat > "$1/0001-understand-source.md" <<TASK
+---
+author: factory
+handler: understand
+previous: 0000-understand-factory.md
+status: backlog
+tools: Read,Write,Edit,Glob,Grep
+---
+
+Examine the ${SOURCE_DIR} repo. Write all three knowledge files to \`knowledge/source/\`:
+
+1. \`knowledge/source/PRINCIPLES.md\` — the constraints, conventions, and rules this repo follows.
+2. \`knowledge/source/PARTS.md\` — the constituents that compose this repo and how they relate.
+3. \`knowledge/source/PURPOSE.md\` — why this repo exists, what it enables, and how to measure fulfillment.
+
+Follow the method in \`agents/UNDERSTAND.md\`. Work in order: principles, then parts, then purpose.
+
+## Done
+- \`file_contains("knowledge/source/PRINCIPLES.md", "# Principles")\`
+- \`file_contains("knowledge/source/PARTS.md", "# Parts")\`
+- \`file_contains("knowledge/source/PURPOSE.md", "# Purpose")\`
+- \`file_contains("knowledge/source/PURPOSE.md", "## Measures")\`
+TASK
 }
 
 # --- writer: ./factory launcher ---
@@ -1769,7 +1782,7 @@ remove_script() {
 write_files() {
   local dir="$1"
   mkdir -p "$dir"
-  for d in tasks hooks state agents initiatives projects logs worktrees specs; do
+  for d in tasks hooks state agents initiatives projects logs worktrees specs knowledge/factory knowledge/source; do
     mkdir -p "$dir/$d"
   done
   cp "$0" "$dir/factory.sh"
@@ -1782,6 +1795,7 @@ write_files() {
   write_projects_md "$dir/specs"
   write_tasks_md "$dir/specs"
   write_epilogue_md "$dir"
+  write_understand_md "$dir/agents"
   write_planner_md "$dir/agents"
   write_fixer_md "$dir/agents"
   write_bootstrap_tasks "$dir/tasks"
@@ -1791,15 +1805,13 @@ write_files() {
 setup_repo() {
   git init "$FACTORY_DIR" >/dev/null 2>&1
   git -C "$FACTORY_DIR" config core.hooksPath hooks
-  local TASK_FILE="$(ls "$FACTORY_DIR/tasks/"*.md 2>/dev/null | head -1)"
-  local TASK_NAME="$(basename "$TASK_FILE" .md)"
   (
     cd "$FACTORY_DIR"
     git add -A
     git reset tasks/ >/dev/null 2>&1 || true  # unstage the bootstrap task(s)
     git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
     git add tasks/
-    git commit -m "Initial task: $TASK_NAME" >/dev/null 2>&1 || true
+    git commit -m "Initial tasks: bootstrap" >/dev/null 2>&1 || true
   )
 }
 
