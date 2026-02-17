@@ -1081,11 +1081,9 @@ write_initiatives_md() {
 cat > "$1/INITIATIVES.md" <<'INITIATIVES'
 # Initiatives
 
-Initiatives are high-level goals that define **what** the factory is trying to
-achieve. Each initiative is a markdown file in `initiatives/` named
-`NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
+An initiative is a high-level goal that defines **what** the factory is trying to achieve. Each initiative is a markdown file in `initiatives/` named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
 
-## Format
+## File format
 
 ```markdown
 ---
@@ -1095,39 +1093,77 @@ status: backlog
 
 ## Problem
 
-What's wrong now. What friction, gap, or limitation exists in the codebase.
-Ground this in what you observe — name files, modules, workflows, user pain.
-Not "testing could be better" — what specifically is broken or missing.
-
 ## Outcome
-
-What's true when this initiative succeeds. Describe the end state, not the
-work. Connect to Existential or Strategic Purpose — which bullet does this
-advance?
-
-Not "we will add tests" — "developers can refactor core modules confidently
-because every public interface has contract tests."
 
 ## Scope
 
-What's in and what's out. Initiatives without boundaries expand forever.
-List 2–4 things explicitly excluded.
-
 ## Measures
-
-How you know it's working. Observable signals — commands you can run, metrics
-you can check, behaviors you can demonstrate. Draw from Existential or
-Strategic Measures in the source repo's PURPOSE.md. If you can't point to a specific measure,
-the initiative isn't grounded.
 ```
 
-All four sections are required. An initiative that can't fill them isn't ready
-to be created.
+## Initiative structure
 
-## Frontmatter
+**Frontmatter (all planner-set):**
+- `status` — lifecycle state (`backlog`, `active`, `suspended`, `completed`, `stopped`). Add `stop_reason` when setting `stopped`.
+- `author` — who created this initiative (`planner`, `fixer`, or a custom name).
 
-- **status** — lifecycle state (backlog, active, suspended, completed, stopped)
-- **author** — who created this initiative (`planner`, `fixer`, or a custom name)
+### Problem
+
+What friction, gap, or limitation exists in the codebase right now.
+
+- Ground it in what you observe — name files, modules, workflows, user pain.
+- Not "testing could be better" — what specifically is broken or missing.
+- The problem must be evident from the source repo's current state. If you can't point to concrete evidence, you don't have a problem yet.
+
+### Outcome
+
+What is true when this initiative succeeds. The end state, not the work.
+
+- Connect to a specific bullet in PURPOSE.md (Existential or Strategic Purpose).
+- Not "we will add tests" — "developers can refactor core modules confidently because every public interface has contract tests."
+- One initiative, one outcome. If the outcome has "and" in it, you may have two initiatives.
+
+### Scope
+
+What is in and what is out. Initiatives without boundaries expand forever.
+
+- List 2–4 things explicitly excluded.
+- Scope defines where projects will operate. If you can't draw a boundary, the initiative is too vague.
+
+### Measures
+
+How you know it's working. Observable signals.
+
+- Commands you can run, metrics you can check, behaviors you can demonstrate.
+- Draw from Existential or Strategic Measures in the source repo's PURPOSE.md.
+- If you can't point to a specific measure, the initiative isn't grounded.
+
+## What doesn't belong in an initiative
+
+- **Solutions.** An initiative names the problem and the desired end state. It does not prescribe how to get there. That's what projects are for.
+- **Vague problems.** "Code quality could be better" is not a problem. Name the specific gap with evidence from the source repo.
+- **Unmeasurable outcomes.** If you cannot write a Measures section with observable signals, the outcome is aspirational, not real.
+- **Work that is really a project.** If the problem can be solved by one scoped deliverable, it's a project under an existing initiative, not a new initiative.
+- **Multiple problems.** One initiative, one problem. If the Problem section has two distinct threads, split them.
+
+## Drafting test
+
+Before creating an initiative, ask:
+
+- Can I state the problem in one sentence, grounded in evidence from the source repo?
+- Can I state the outcome as an end state, not as work to be done?
+- Can I list measures that an automated system could check?
+- Does this trace to a specific bullet in PURPOSE.md?
+- Is this too big to be a project but too specific to be the entire purpose?
+
+If any answer is no, the initiative needs rework.
+
+## Principles
+
+- **An initiative is a problem, not a solution.** It names what is wrong and what "fixed" looks like. It never prescribes how.
+- **Outcomes are end states, not activities.** "Add integration tests" is an activity. "Every API endpoint has a contract test that runs in CI" is an end state.
+- **Measures are the contract.** The planner checks measures to decide whether to mark an initiative completed. Everything else is orientation.
+- **Scope prevents drift.** Without explicit exclusions, every initiative becomes "make everything better." The exclusions matter as much as the inclusions.
+- **One active initiative at a time.** Scarcity forces prioritization. If the current initiative isn't the most important thing, stop it and start one that is.
 INITIATIVES
 }
 
@@ -1136,48 +1172,91 @@ write_projects_md() {
 cat > "$1/PROJECTS.md" <<'PROJECTS'
 # Projects
 
-Projects are scoped deliverables that advance an initiative. Each project is a
-markdown file in `projects/` named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
+A project is a scoped deliverable that advances an initiative. Each project is a markdown file in `projects/` named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
 
-## Format
+## File format
 
 ```markdown
 ---
 author: planner
-parent: initiatives/0001-slug.md
 status: backlog
+parent: initiatives/NNNN-slug.md
 ---
 
-How this project advances the parent initiative. What slice of the initiative's
-problem space it addresses. Which Strategic or Tactical Purpose bullets it
-serves. How it relates to sibling projects (if any).
+How this project advances the parent initiative.
 
 ## Deliverables
 
-Specific artifacts that will exist when this project is done. Not goals —
-things. Files, behaviors, capabilities, removed code. Each deliverable is a
-noun phrase that either exists or doesn't.
-
 ## Acceptance
 
-Testable criteria — one per deliverable. Each answers "how do I verify this
-deliverable is done?" These map directly to task Done conditions and should
-connect to Strategic or Tactical Measures.
-
 ## Scope
-
-What this project covers and what it explicitly does not. If the initiative
-has multiple projects, explain the boundary between this one and its siblings.
 ```
 
-All sections are required. A project without concrete deliverables and testable
-acceptance criteria isn't ready to be created.
+## Project structure
 
-## Frontmatter
+**Frontmatter (all planner-set):**
+- `status` — lifecycle state (`backlog`, `active`, `suspended`, `completed`, `stopped`). Add `stop_reason` when setting `stopped`.
+- `author` — who created this project (`planner`, `fixer`, or a custom name).
+- `parent` — initiative this project advances (e.g., `initiatives/0001-improve-testing.md`).
 
-- **status** — lifecycle state (backlog, active, suspended, completed, stopped)
-- **author** — who created this project (`planner`, `fixer`, or a custom name)
-- **parent** — initiative this project advances (example: `initiatives/0001-improve-testing.md`)
+### Intro paragraph (the text before any `##` section)
+
+How this project advances the parent initiative. Orientation for the agent creating tasks.
+
+- What slice of the initiative's problem space it addresses.
+- Which Strategic or Tactical Purpose bullets it serves.
+- How it relates to sibling projects, if any exist.
+
+### Deliverables
+
+Specific artifacts that will exist when this project is done. Not goals — things.
+
+- Files, behaviors, capabilities, removed code.
+- Each deliverable is a noun phrase that either exists or doesn't. "Unit tests for auth module (`auth/*.test.ts`)" is a deliverable. "Better test coverage" is a wish.
+- Deliverables map 1:1 to tasks. If a deliverable needs more than one task, break the deliverable down further.
+
+### Acceptance
+
+Testable criteria, one per deliverable. Each answers "how do I verify this deliverable is done?"
+
+- Must map to automatable Done conditions (the same condition types tasks use: `file_exists`, `file_contains`, `command`, etc.).
+- No human judgment. "Code is cleaner" is not checkable. "Linter passes with zero warnings" is.
+- Connect to Strategic or Tactical Measures in PURPOSE.md.
+
+### Scope
+
+What this project covers and what it explicitly does not.
+
+- If the initiative has multiple projects, explain the boundary between this one and its siblings.
+- Scope is smaller than the parent initiative's scope. If it's the same size, you only need one project.
+
+## What doesn't belong in a project
+
+- **Goals instead of deliverables.** "Improve performance" is a goal. "Response time for `/api/users` under 200ms" is a deliverable with a testable acceptance criterion.
+- **Acceptance that requires human judgment.** "Code is well-structured" cannot be checked by the runner. Rephrase as something automatable.
+- **Scope identical to the initiative.** If the project covers everything the initiative covers, either the initiative is too small (it should be a project) or the project needs to be decomposed.
+- **Deliverables from a different initiative.** Every deliverable must advance the parent. If a deliverable traces to a different initiative, it belongs in a different project.
+- **Implementation details.** A project says what will exist, not how it will be built. The tasks carry the how.
+
+## Drafting test
+
+Before creating a project, ask:
+
+- Does every deliverable name a concrete artifact (file, behavior, capability)?
+- Does every acceptance criterion map to an automatable Done condition?
+- Can I trace every deliverable to the parent initiative's Problem or Outcome?
+- Is the scope strictly smaller than the parent initiative's scope?
+- Could this project ship independently of sibling projects?
+
+If any answer is no, the project needs rework.
+
+## Principles
+
+- **A project is a deliverable, not a goal.** It names what will exist when the work is done. The things are specific enough that tasks can produce them.
+- **Acceptance criteria are automatable.** Every criterion must be expressible as a Done condition the runner can check. If you can't write the condition, the criterion is too vague.
+- **Projects are independent slices.** Each project delivers value on its own. If project B only makes sense after project A ships, they may be one project with sequenced tasks, not two projects.
+- **Scope is the boundary between siblings.** When an initiative has multiple projects, the scope sections collectively partition the initiative's problem space. Gaps and overlaps are both failures.
+- **Deliverables map to tasks.** If you can't see how a deliverable becomes 1–3 tasks with concrete Done conditions, the deliverable is too abstract. Break it down before creating the project.
 PROJECTS
 }
 
@@ -1188,33 +1267,25 @@ cat > "$1/TASKS.md" <<'TASKS'
 
 A task is an atomic unit of work. It is the prompt given to an agent. The runner (`factory.py`) picks up tasks, runs them one at a time, and checks their completion conditions.
 
-Tasks live in `tasks/`. Each task is a markdown file named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`).
+Tasks live in `tasks/`. Each task is a markdown file named `NNNN-slug.md` (monotonic counter, e.g. `0000-slug.md`).
 
 ## File format
 
 ```markdown
 ---
-tools: Read,Write,Edit,Glob,Grep
-author: planner
-handler: understand
-parent: projects/name.md
-previous: tasks/0003-other-task.md
+key: value - frontmatter key-value pairs go here
 ---
 
-What to do.
+[Prompt body]
 
 ## Context
 
-Why this task exists.
-
 ## Verify
 
-Self-checks before committing.
-
 ## Done
-
-- `file_exists("path")`
 ```
+
+## Task structure
 
 **Frontmatter (author-set):**
 - `tools` — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`). Overrides the agent's tools if set.
@@ -1230,9 +1301,7 @@ Self-checks before committing.
 - `session` — agent session ID
 - `commit` — HEAD commit hash when the task completed
 
-## Task structure
-
-### Prompt (the body before any `##` section)
+### Prompt body (the text before any `##` section)
 
 What to do. This is the agent's mandate for this run.
 
@@ -1242,24 +1311,6 @@ What to do. This is the agent's mandate for this run.
 - **Completable in one session.** If an agent can't finish it in one run, the task is too big. Split it.
 
 The prompt is a mandate. The agent must do what it says, fully, or halt.
-
-### Done
-
-Completion conditions checked by the runner after the agent finishes. These are the contract — the only thing that determines success or failure.
-
-Supported conditions (one per line, all must pass):
-- `file_exists("path")` — file exists in the worktree
-- `file_absent("path")` — file does not exist
-- `file_contains("path", "text")` — file contains text
-- `file_missing_text("path", "text")` — file missing or lacks text
-- `command("cmd")` — shell command exits 0
-- `never` — task never completes (recurring)
-
-Rules for done conditions:
-- **Mechanically verifiable.** No human judgment. The runner checks these automatically.
-- **Necessary and sufficient.** If the conditions pass, the task is done. If the task is done, the conditions pass. No gap in either direction.
-- **Matched to the prompt.** If the prompt says "write X" and the done condition checks for Y, the task is broken.
-- **Fewer is better.** 1–3 conditions for most tasks. If you need 10, you have 3 tasks.
 
 ### Context
 
@@ -1303,6 +1354,24 @@ If any answer is no, the task needs rework.
 - **The task carries the what. The agent carries the how.** Method, procedure, and technique do not belong in task prompts. If the prompt tells the agent how to do its work, the instructions belong in the agent definition instead.
 - **Context is orientation, not instruction.** It explains why the work matters. Agents read it but do not execute it.
 - **Scope is sacred.** A task does what the prompt says and nothing else. Adjacent improvements, refactors, and "while I'm here" fixes are future tasks.
+
+### Done
+
+Completion conditions checked by the runner after the agent finishes. These are the contract — the only thing that determines success or failure.
+
+Supported conditions (one per line, all must pass):
+- `file_exists("path")` — file exists in the worktree
+- `file_absent("path")` — file does not exist
+- `file_contains("path", "text")` — file contains text
+- `file_missing_text("path", "text")` — file missing or lacks text
+- `command("cmd")` — shell command exits 0
+- `never` — task never completes (recurring)
+
+Rules for done conditions:
+- **Mechanically verifiable.** No human judgment. The runner checks these automatically.
+- **Necessary and sufficient.** If the conditions pass, the task is done. If the task is done, the conditions pass. No gap in either direction.
+- **Matched to the prompt.** If the prompt says "write X" and the done condition checks for Y, the task is broken.
+- **Fewer is better.** 1–3 conditions for most tasks. If you need 10, you have 3 tasks.
 TASKS
 }
 
