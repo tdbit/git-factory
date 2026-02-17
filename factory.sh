@@ -1534,9 +1534,9 @@ You plan work. You are invoked when no ready task exists.
 
 ## Capabilities
 
-- Read all files in the factory repo: initiatives, projects, tasks, and agent definitions
-- Run commands in the source repo to examine actual state
-- Write and edit initiative, project, and task files
+- Read specs in .factory/specs folder  format requirements
+- Read, write and edit work items in .factory/[initiatives|projects|tasks] folder to understand the factory state
+- Read files in the source repo to examine the current source repo state
 - Update frontmatter status on existing items
 
 You do not commit. The runner commits your work.
