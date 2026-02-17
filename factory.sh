@@ -957,8 +957,6 @@ def run():
                 ).decode().strip().splitlines()
             except subprocess.CalledProcessError:
                 pass
-        else:
-            log("  agent made no commits")
 
         # squash agent commits into the runner's commit (factory tasks only)
         if agent_committed and not is_project_task:
@@ -1168,7 +1166,7 @@ What friction, gap, or limitation exists in the codebase right now.
 
 What is true when this initiative succeeds. The end state, not the work.
 
-- Connect to a specific bullet in PURPOSE.md.
+- Connect to a specific purpose or measure from the understanding.
 - Not "we will add tests" — "developers can refactor core modules confidently because every public interface has contract tests."
 - One initiative, one outcome. If the outcome has "and" in it, you may have two initiatives.
 
@@ -1184,7 +1182,7 @@ What is in and what is out. Initiatives without boundaries expand forever.
 How you know it's working. Observable signals.
 
 - Commands you can run, metrics you can check, behaviors you can demonstrate.
-- Draw from Measures in the source repo's PURPOSE.md.
+- Draw from Measures in the understanding.
 - If you can't point to a specific measure, the initiative isn't grounded.
 
 ## What doesn't belong in an initiative
@@ -1202,7 +1200,7 @@ Before creating an initiative, ask:
 - Can I state the problem in one sentence, grounded in evidence from the source repo?
 - Can I state the outcome as an end state, not as work to be done?
 - Can I list measures that an automated system could check?
-- Does this trace to a specific bullet in PURPOSE.md?
+- Does this trace to a specific purpose or measure from the understanding?
 - Is this too big to be a project but too specific to be the entire purpose?
 
 If any answer is no, the initiative needs rework.
@@ -1254,7 +1252,7 @@ How this project advances the parent initiative.
 How this project advances the parent initiative. Orientation for the agent creating tasks.
 
 - What slice of the initiative's problem space it addresses.
-- Which constituent in PARTS.md it addresses and what purpose it serves.
+- Which constituent from the understanding it addresses and what purpose it serves.
 - How it relates to sibling projects, if any exist.
 
 ### Deliverables
@@ -1271,7 +1269,7 @@ Testable criteria, one per deliverable. Each answers "how do I verify this deliv
 
 - Must map to automatable Done conditions (the same condition types tasks use: `file_exists`, `file_contains`, `command`, etc.).
 - No human judgment. "Code is cleaner" is not checkable. "Linter passes with zero warnings" is.
-- Connect to Measures in PURPOSE.md.
+- Connect to Measures from the understanding.
 
 ### Scope
 
@@ -1356,7 +1354,7 @@ key: value - frontmatter key-value pairs go here
 
 What to do. This is the agent's mandate for this run.
 
-- **One outcome.** A task describes a single thing that will be different when it's done. "Write PRINCIPLES.md for the factory repo" is one outcome. "Check which files exist and create tasks for the missing ones" is a program — break it up.
+- **One outcome.** A task describes a single thing that will be different when it's done. "Add rate limiting to the /auth endpoint" is one outcome. "Check which files exist and create tasks for the missing ones" is a program — break it up.
 - **Concrete targets.** Name files, functions, behaviors, paths. Not "improve the config" — "move the database URL from `config.ts` to `env.ts`."
 - **What, not how.** The prompt says what must change. The agent's definition covers how. Do not put procedure, method, or conditional logic in the prompt.
 - **Completable in one session.** If an agent can't finish it in one run, the task is too big. Split it.
@@ -1375,7 +1373,7 @@ Why this task exists. Orientation, not instruction.
 
 Self-checks the agent applies to its own work before committing.
 
-- "Read back PURPOSE.md and confirm every statement passes the 'to what end?' test."
+- "Read back the output and confirm every statement passes the 'to what end?' test."
 - "Run the test suite and confirm no regressions."
 - **Not additional work.** "Also update the README" is a second task or part of the prompt, not a verify step.
 
@@ -1639,7 +1637,7 @@ You diagnose failures and fix the system that produced them.
 
 - Read task files, run logs, and git diffs of agent output
 - Read all factory-internal files: factory.py, agent definitions, format specs, PROLOGUE.md
-- Read \`knowledge/factory/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md) and \`knowledge/source/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md)
+- Read completed understand tasks in \`tasks/\` for the source repo's Principles, Parts, Purpose, and Measures
 - Run commands to examine state
 - Write and edit factory-internal files
 - Create new task files
@@ -1648,7 +1646,7 @@ You do not redo the failed work. You do not modify or reactivate stopped tasks. 
 
 ## Method
 
-You are invoked when a task stops with \`stop_reason: failed\` or \`stop_reason: incomplete\`. Read \`knowledge/factory/PURPOSE.md\` before proceeding.
+You are invoked when a task stops with \`stop_reason: failed\` or \`stop_reason: incomplete\`. Read the completed understand task(s) in \`tasks/\` to orient on purpose and measures before proceeding.
 
 ### 1. Observe
 
@@ -1663,7 +1661,7 @@ Gather facts:
 
 Identify what went wrong at the system level.
 
-Read the Measures in \`knowledge/factory/PURPOSE.md\`. The failure violated at least one — find it. Then ask: what should have caught this before or during the task, and why didn't it?
+Read the Measures from the completed understand task. The failure violated at least one — find it. Then ask: what should have caught this before or during the task, and why didn't it?
 
 - No relevant check exists → that's the gap.
 - A check exists but missed the failure → the check is inadequate.
@@ -1675,7 +1673,7 @@ Create a new task that closes the gap:
 
 - Include `author: fixer` in frontmatter.
 - Target a factory-internal file — \`factory.py\`, \`PROLOGUE.md\`, an agent definition, a format spec. Not the source repo.
-- The fix must either strengthen the violated measure or add the check that should have caught the failure. Connect it to a specific bullet in \`knowledge/factory/PURPOSE.md\`.
+- The fix must either strengthen the violated measure or add the check that should have caught the failure. Connect it to a specific measure from the understanding.
 - Done conditions verify the system change, not the original deliverable.
 
 The failed task stays stopped.
@@ -1694,7 +1692,7 @@ If the failure cannot be traced to a system gap — the agent had clear instruct
 
 - Did you read the log and diff before forming a theory? If you diagnosed without observing, start over.
 - Does your fix target a factory-internal file, not the source repo?
-- Can you name the specific measure in \`knowledge/factory/PURPOSE.md\` that was violated?
+- Can you name the specific measure from the understanding that was violated?
 - Does the fix task have Done conditions that verify the system change?
 - Will this fix prevent the same failure mode, or just this specific failure?
 
@@ -1703,7 +1701,7 @@ If the failure cannot be traced to a system gap — the agent had clear instruct
 - Never retry without diagnosing. The same system produces the same failure.
 - Never create symptomatic fixes. "Add a note telling the agent to be careful" puts the burden on the task, not the system. If an agent can ignore an instruction, fix the system.
 - Never skip observation. No log, no diagnosis.
-- Never create a fix that doesn't trace to a specific measure in \`knowledge/factory/PURPOSE.md\`. If you can't name the measure, you haven't diagnosed the failure.
+- Never create a fix that doesn't trace to a specific measure from the understanding. If you can't name the measure, you haven't diagnosed the failure.
 - Never modify or reactivate the failed task. It stays stopped. New work goes in new tasks.
 FIXER
 }
