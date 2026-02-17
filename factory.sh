@@ -728,11 +728,20 @@ def run():
             if just_planned:
                 log("stopping — no tasks after planning")
                 return
+            # don't replan if backlog tasks exist but are just blocked
+            all_tasks = load_tasks()
+            blocked = [t for t in all_tasks
+                       if t["status"] not in ("completed", "stopped")
+                       and not (bool(t["done"]) and check_done(t["done"]))]
+            if blocked:
+                log("stopping — tasks exist but are blocked on dependencies")
+                return
             _write_task("plan", "", handler="planner",
                         tools="Read,Write,Edit,Glob,Grep,Bash")
             just_planned = True
             continue
-        just_planned = False
+        if task.get("handler") != "planner":
+            just_planned = False
         name = task["name"]
         log(f"\033[32mtask\033[0m started: {name}")
 
@@ -1474,6 +1483,7 @@ For the plan as a whole:
 - No untestable acceptance. "Code is cleaner" is not checkable. Acceptance criteria must map to automatable Done conditions.
 - No busywork tasks. Every task must advance a project deliverable.
 - No over-planning. Plan enough to maintain flow, not to predict the future.
+- Never create tasks with `handler: planner`. Planning is triggered automatically by the runner when the task queue empties. Use the `previous` field to sequence dependent work — don't insert plan tasks as waypoints.
 - No copy-paste structure. Each initiative addresses a different problem — the structure reflects that.
 PLANNER
 sed -i '' "s|{source_repo}|$SOURCE_DIR|g" "$1/PLANNER.md"
