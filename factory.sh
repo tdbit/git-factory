@@ -399,21 +399,6 @@ def _plan_briefing(tasks):
         lines.append("")
     sections.append("\n".join(lines))
 
-    # --- Source purpose measures ---
-    purpose_path = ROOT / "knowledge" / "source" / "PURPOSE.md"
-    lines = ["## Source Purpose Measures", ""]
-    if purpose_path.exists():
-        text = purpose_path.read_text()
-        m = re.search(r'^## Measures\s*\n(.*?)(?=\n## |\Z)', text, re.DOTALL | re.MULTILINE)
-        if m:
-            lines.append(m.group(1).strip())
-        else:
-            lines.append("No Measures section found in PURPOSE.md.")
-    else:
-        lines.append("knowledge/source/PURPOSE.md not found.")
-    lines.append("")
-    sections.append("\n".join(lines))
-
     # --- Scarcity counts ---
     ini_active = sum(1 for f in (ini_dir.glob("*.md") if ini_dir.exists() else [])
                      if (p := _parse_frontmatter(f.read_text())) and p[0].get("status") == "active")
@@ -436,8 +421,6 @@ def _plan_briefing(tasks):
         "- `specs/INITIATIVES.md` — initiative format",
         "- `specs/PROJECTS.md` — project format",
         "- `specs/TASKS.md` — task format",
-        "- `knowledge/source/PURPOSE.md` — source purpose, measures, and tests",
-        "- `knowledge/source/PARTS.md` — source constituents",
         "",
     ]))
 
@@ -720,12 +703,14 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
 
     model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
+    max_turns = os.environ.get("FACTORY_MAX_TURNS", "8").strip()
     model_arg = ["--model", model_name]
     log(f"  → using: {cli_name or 'claude'} \033[2m({model_name})\033[0m")
 
     proc = subprocess.Popen(
         [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
          "--output-format", "stream-json",
+         "--max-turns", max_turns,
          "--allowedTools", allowed_tools, *model_arg, "--", full_prompt],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1454,7 +1439,7 @@ You understand things. You are given an entity and a question about it.
 
 - Read files, directories, and source code
 - Search for patterns across a codebase (Glob, Grep)
-- Write output files (PRINCIPLES.md, PARTS.md, PURPOSE.md)
+- Create a follow-on planner task containing your findings
 
 ## Method
 
@@ -1491,9 +1476,25 @@ Purpose includes **measures** — how you'd observe purpose being fulfilled *bet
 
 Regardless of which question you're answering: investigate first, then state what you found. Use whatever means are available — read files, search patterns, trace dependencies, run commands. Stop investigating when you can answer the question concretely, or when you've determined you can't.
 
+## Output
+
+When finished, create a task file in `tasks/` for the planner. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-plan.md`.
+
+Frontmatter:
+```
+---
+author: understand
+handler: planner
+tools: Read,Write,Edit,Glob,Grep,Bash
+status: backlog
+---
+```
+
+Body: structure your findings as `## Understanding: {scope}` with subsections for Principles, Parts, and Purpose (including Measures). This becomes the planner's context for creating work.
+
 ## Halt Condition
 
-If you cannot answer the question concretely — with references to specific things you examined — stop. Write a BLOCKED file (e.g., PURPOSE-BLOCKED.md, PARTS-BLOCKED.md, PRINCIPLES-BLOCKED.md) stating what you examined, what was ambiguous, and what questions need a human answer.
+If you cannot answer the question concretely — with references to specific things you examined — note the blockage in the planner task body: what you examined, what was ambiguous, and what questions need a human answer. The planner can then decide what to do.
 
 Specific signals that you're stuck:
 
@@ -1543,7 +1544,7 @@ You do not commit. The runner commits your work.
 
 ## Method
 
-Your task body contains the current queue, active initiatives and projects, source purpose measures, scarcity counts, and format references. Start there.
+Your task body contains the current queue, active initiatives and projects, scarcity counts, and format references. It may also contain an Understanding section from a prior understand task. Start there.
 
 ### 1. Assess
 
@@ -1557,7 +1558,11 @@ If any task has `stop_reason: failed` or was marked incomplete, follow `agents/F
 
 Cascade finished work upward: all tasks under a project completed → mark the project `completed`. All projects under an initiative completed → mark the initiative `completed`.
 
-### 3. Fill
+### 3. Understand
+
+If your task body contains `## Understanding`, use it as context for planning. If it does not, and you cannot plan concretely because you lack understanding of the source repo (or a specific part of it), create a `handler: understand` task in `tasks/` scoped to the target. Then stop — do not plan without understanding. If understanding is already present, do not create another understand task.
+
+### 4. Fill
 
 Work top-down. Only create what is missing.
 
@@ -1569,19 +1574,19 @@ Work top-down. Only create what is missing.
 
 Read the spec files listed in Format References for field requirements and naming conventions.
 
-### 4. Validate
+### 5. Validate
 
 Confirm scarcity invariants hold and at least one task is ready to run (active, unblocked, conditions unmet). If not, investigate and fix.
 
 ## Halt Condition
 
-If you cannot trace new work to a specific bullet in \`knowledge/source/PURPOSE.md\`, do not create it. If PURPOSE.md is missing or empty, create no work — write a note explaining that planning is blocked.
+If you lack understanding of the source repo, create a `handler: understand` task scoped to what you need and stop. Do not plan without understanding.
 
 ## Validation
 
 For every item you create or activate:
 
-- Can you trace it to \`knowledge/source/PURPOSE.md\`?
+- Can you trace it to the purpose described in your understanding?
 - Does it have concrete, testable success criteria?
 - Is it the highest-leverage thing at its level?
 - Would a senior engineer's review of the problem statement, deliverables, and acceptance criteria hold up?
@@ -1590,7 +1595,7 @@ For the plan as a whole: did you work top-down, or skip levels?
 
 ## Rules
 
-- Every initiative traces to PURPOSE.md. Every project traces to a constituent in PARTS.md. Every task delivers a project artifact. No line, no work.
+- Every initiative traces to purpose. Every project traces to a known constituent. Every task delivers a project artifact. No understanding, no work.
 - No vague initiatives. Name the specific gap, with evidence.
 - No aspirational deliverables. Name concrete artifacts.
 - No untestable acceptance. Criteria must map to automatable Done conditions.
@@ -1703,57 +1708,6 @@ When you are done:
 EPILOGUE
 }
 
-# --- writer: bootstrap tasks ---
-write_bootstrap_tasks() {
-cat > "$1/0000-understand-factory.md" <<TASK
----
-author: factory
-handler: understand
-previous:
-status: backlog
-tools: Read,Write,Edit,Glob,Grep
----
-
-Examine the ${FACTORY_DIR} repo. Write all three knowledge files to \`knowledge/factory/\`:
-
-1. \`knowledge/factory/PRINCIPLES.md\` — the constraints, conventions, and rules this repo follows.
-2. \`knowledge/factory/PARTS.md\` — the constituents that compose this repo and how they relate.
-3. \`knowledge/factory/PURPOSE.md\` — why this repo exists, what it enables, and how to measure fulfillment.
-
-Follow the method in \`agents/UNDERSTAND.md\`. Work in order: principles, then parts, then purpose.
-
-## Done
-- \`file_contains("knowledge/factory/PRINCIPLES.md", "# Principles")\`
-- \`file_contains("knowledge/factory/PARTS.md", "# Parts")\`
-- \`file_contains("knowledge/factory/PURPOSE.md", "# Purpose")\`
-- \`file_contains("knowledge/factory/PURPOSE.md", "## Measures")\`
-TASK
-
-cat > "$1/0001-understand-source.md" <<TASK
----
-author: factory
-handler: understand
-previous: 0000-understand-factory.md
-status: backlog
-tools: Read,Write,Edit,Glob,Grep
----
-
-Examine the ${SOURCE_DIR} repo. Write all three knowledge files to \`knowledge/source/\`:
-
-1. \`knowledge/source/PRINCIPLES.md\` — the constraints, conventions, and rules this repo follows.
-2. \`knowledge/source/PARTS.md\` — the constituents that compose this repo and how they relate.
-3. \`knowledge/source/PURPOSE.md\` — why this repo exists, what it enables, and how to measure fulfillment.
-
-Follow the method in \`agents/UNDERSTAND.md\`. Work in order: principles, then parts, then purpose.
-
-## Done
-- \`file_contains("knowledge/source/PRINCIPLES.md", "# Principles")\`
-- \`file_contains("knowledge/source/PARTS.md", "# Parts")\`
-- \`file_contains("knowledge/source/PURPOSE.md", "# Purpose")\`
-- \`file_contains("knowledge/source/PURPOSE.md", "## Measures")\`
-TASK
-}
-
 # --- writer: ./factory launcher ---
 write_launcher() {
 cat > "$1/factory" <<LAUNCH
@@ -1811,7 +1765,7 @@ remove_script() {
 write_files() {
   local dir="$1"
   mkdir -p "$dir"
-  for d in tasks hooks state agents initiatives projects logs worktrees specs knowledge/factory knowledge/source; do
+  for d in tasks hooks state agents initiatives projects logs worktrees specs; do
     mkdir -p "$dir/$d"
   done
   cp "$0" "$dir/factory.sh"
@@ -1827,7 +1781,6 @@ write_files() {
   write_understand_md "$dir/agents"
   write_planner_md "$dir/agents"
   write_fixer_md "$dir/agents"
-  write_bootstrap_tasks "$dir/tasks"
   write_hook "$dir/hooks"
 }
 
@@ -1837,10 +1790,7 @@ setup_repo() {
   (
     cd "$FACTORY_DIR"
     git add -A
-    git reset tasks/ >/dev/null 2>&1 || true  # unstage the bootstrap task(s)
     git commit -m "Bootstrap factory" >/dev/null 2>&1 || true
-    git add tasks/
-    git commit -m "Initial tasks: bootstrap" >/dev/null 2>&1 || true
   )
 }
 
