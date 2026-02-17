@@ -135,6 +135,8 @@ def build_epilogue(task, project_dir):
 _has_progress = False
 _run_log_file = None
 _ansi_regex = re.compile(r"\033\[[0-9;]*m")
+_total_cost = 0.0
+_start_time = None
 
 def _show_progress(line):
     global _has_progress
@@ -800,7 +802,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
 
 
 def format_result(result):
-    """Format a result event dict into a short string like '(130.2s, $0.3683)'."""
+    """Format a result event dict into a short string like '(130.2s, $0.43, $10.32/hr)'."""
     if not result:
         return ""
     parts = []
@@ -810,6 +812,10 @@ def format_result(result):
         parts.append(f"{dur/1000:.1f}s")
     if cost:
         parts.append(f"${cost:.4f}")
+    if _start_time is not None and _total_cost > 0:
+        hrs = (time.monotonic() - _start_time) / 3600
+        if hrs > 0:
+            parts.append(f"${_total_cost / hrs:.2f}/hr")
     return f"({', '.join(parts)})" if parts else ""
 
 def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log=None):
@@ -831,7 +837,9 @@ def run():
     if not _acquire_pid():
         return
 
-    global _run_log_file
+    global _run_log_file, _start_time, _total_cost
+    _start_time = time.monotonic()
+    _total_cost = 0.0
     LOGS_DIR.mkdir(exist_ok=True)
     log_path = LOGS_DIR / time.strftime("%Y-%m-%d_%H%M%S.log")
     _run_log_file = open(log_path, "w")
@@ -924,6 +932,8 @@ def run():
             update_task_meta(task, session=session_id)
         duration_ms = res.get("duration_ms")
         cost_usd = res.get("cost_usd") or res.get("total_cost_usd")
+        if cost_usd:
+            _total_cost += cost_usd
         duration = f"{duration_ms/1000:.1f}s" if duration_ms else None
         cost = f"${cost_usd:.4f}" if cost_usd else None
 
