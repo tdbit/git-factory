@@ -868,6 +868,9 @@ def run():
         sh("git", "add", str(rel))
         sh("git", "commit", "-m", message)
 
+    def git_head(cwd):
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cwd, stderr=subprocess.STDOUT).decode().strip()
+
     just_planned = False
     while True:
         task = next_task()
@@ -875,12 +878,10 @@ def run():
             if just_planned:
                 log("stopping — no tasks after planning")
                 return
-            # don't replan if backlog tasks exist but are just blocked
             all_tasks = load_tasks()
-            blocked = [t for t in all_tasks
-                       if t["status"] not in ("completed", "stopped")
-                       and not (bool(t["done"]) and check_done(t["done"]))]
-            if blocked:
+            if any(t["status"] not in ("completed", "stopped")
+                   and not (bool(t["done"]) and check_done(t["done"]))
+                   for t in all_tasks):
                 log("stopping — tasks exist but are blocked on dependencies")
                 return
             _write_task("plan", _plan_briefing(all_tasks),
@@ -902,22 +903,18 @@ def run():
 
         update_task_meta(task, status="active", pid=str(os.getpid()))
         commit_task(task, f"Start Task: {name}")
-        # build prompt: instruction body + context + verify (exclude done)
+        # build prompt: prologue + body + context + verify + acceptance + epilogue
         prologue = build_prologue()
-        prompt_parts = [prologue, task["prompt"]] if prologue else [task["prompt"]]
-        for section in ("context", "verify"):
-            if section in task["sections"]:
-                prompt_parts.append(f"## {section.title()}\n\n{task['sections'][section]}")
-        prompt = "\n\n".join(prompt_parts)
-
-        # surface done conditions so the agent knows exact acceptance criteria
+        parts = [prologue, task["prompt"]] if prologue else [task["prompt"]]
+        for key in ("context", "verify"):
+            if key in task["sections"]:
+                parts.append(f"## {key.title()}\n\n{task['sections'][key]}")
         if task["done"] and task["done"] != ["never"]:
             checklist = "\n".join(f"- `{c}`" for c in task["done"])
-            prompt += f"\n\n## Acceptance Criteria\n\nYour work is verified by these exact conditions — file paths and names must match precisely:\n\n{checklist}"
-
-        # append epilogue for project tasks
+            parts.append(f"## Acceptance Criteria\n\nYour work is verified by these exact conditions — file paths and names must match precisely:\n\n{checklist}")
         if is_project_task:
-            prompt += build_epilogue(task, work_dir)
+            parts.append(build_epilogue(task, work_dir))
+        prompt = "\n\n".join(parts)
 
         # Load agent if specified
         agent_def = None
@@ -927,28 +924,24 @@ def run():
             if agent_def:
                 log(f"using agent: {agent_name}")
 
-        # snapshot HEAD before agent runs
-        head_before = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=work_dir, stderr=subprocess.STDOUT
-        ).decode().strip()
+        head_before = git_head(work_dir)
 
         run_log = _open_run_log(name)
         try:
             ok, result = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir, run_log=run_log)
         finally:
             run_log.close()
-        session_id = (result or {}).get("session_id")
+        res = result or {}
+        session_id = res.get("session_id")
         if session_id:
             update_task_meta(task, session=session_id)
-        duration_ms = (result or {}).get("duration_ms")
-        cost_usd = (result or {}).get("cost_usd") or (result or {}).get("total_cost_usd")
+        duration_ms = res.get("duration_ms")
+        cost_usd = res.get("cost_usd") or res.get("total_cost_usd")
         duration = f"{duration_ms/1000:.1f}s" if duration_ms else None
         cost = f"${cost_usd:.4f}" if cost_usd else None
 
         # check if agent made any commits
-        head_after = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=work_dir, stderr=subprocess.STDOUT
-        ).decode().strip()
+        head_after = git_head(work_dir)
         agent_committed = head_before != head_after
 
         if not ok:
@@ -985,24 +978,25 @@ def run():
             subprocess.check_output(
                 ["git", "reset", "--soft", head_before], cwd=work_dir, stderr=subprocess.STDOUT
             )
-        passed, details = check_done_details(task["done"], target_dir=work_dir)
-        commit_work_dir = work_dir if is_project_task else None
-        if passed:
-            update_task_meta(task, status="completed", commit=head_after, duration=duration, cost=cost)
-            commit_task(task, f"Complete Task: {name}", scoop=True, work_dir=commit_work_dir)
+
+        def finish_task(passed, details):
+            label = "Complete" if passed else "Incomplete"
+            meta = dict(status="completed", commit=head_after) if passed else dict(status="stopped", stop_reason="incomplete")
+            update_task_meta(task, **meta, duration=duration, cost=cost)
+            cwd = work_dir if is_project_task else None
+            commit_task(task, f"{label} Task: {name}", scoop=True, work_dir=cwd)
             info = format_result(result)
-            log(f"  ✓ conditions: passed \033[2m{info}\033[0m" if info else "  ✓ all conditions passed")
-        else:
-            update_task_meta(task, status="stopped", stop_reason="incomplete", duration=duration, cost=cost)
-            commit_task(task, f"Incomplete Task: {name}", scoop=True, work_dir=commit_work_dir)
-            info = format_result(result)
-            log(f"  ✗ conditions: failed \033[2m{info}\033[0m" if info else "  ✗ conditions not met")
-            if details:
+            if passed:
+                log(f"  ✓ conditions: passed \033[2m{info}\033[0m" if info else "  ✓ all conditions passed")
+            else:
+                log(f"  ✗ conditions: failed \033[2m{info}\033[0m" if info else "  ✗ conditions not met")
                 for cond, ok_cond in details:
-                    mark = "✓" if ok_cond else "✗"
-                    log(f"    {mark} {cond}")
-            log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
-            log(f"  → task: {task['_path'].relative_to(ROOT)}")
+                    log(f"    {'✓' if ok_cond else '✗'} {cond}")
+                log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
+                log(f"  → task: {task['_path'].relative_to(ROOT)}")
+
+        passed, details = check_done_details(task["done"], target_dir=work_dir)
+        finish_task(passed, details)
 
         # log summary of agent commits
         for line in summary_lines:
