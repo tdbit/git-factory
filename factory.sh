@@ -701,11 +701,11 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
             log(f"codex model unavailable: {model_name}, trying fallback")
             continue
 
-        log(f"codex failed with exit code {proc.returncode}")
+        log(f"codex \033[31mfailed\033[0m with exit code {proc.returncode}")
         _dump_debug("codex", [stderr_text] if stderr_text else [], stdout_garbage)
         return False, None
 
-    log("codex failed for all configured models")
+    log("codex \033[31mfailed\033[0m for all configured models")
     _dump_debug("codex", [last_stderr.decode(errors="replace")] if last_stderr else [], [])
     return False, None
 
@@ -801,7 +801,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
 
         exit_code = proc.wait()
         if exit_code != 0:
-            log(f"claude failed with exit code {exit_code}")
+            log(f"claude \033[31mfailed\033[0m with exit code {exit_code}")
             _dump_debug("claude", stderr_output, stdout_garbage)
         return exit_code == 0, result
     except KeyboardInterrupt:
@@ -955,7 +955,7 @@ def run():
             update_task_meta(task, status="stopped", stop_reason="failed", duration=duration, cost=cost)
             commit_task(task, f"Failed Task: {name}")
             info = format_result(result)
-            log(f"  ✗ task crashed \033[2m{info}\033[0m" if info else "  ✗ task crashed")
+            log(f"  ✗ task \033[31mcrashed\033[0m \033[2m{info}\033[0m" if info else "  ✗ task \033[31mcrashed\033[0m")
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             log("")
             return
@@ -987,9 +987,9 @@ def run():
             commit_task(task, f"{label} Task: {name}", scoop=True, work_dir=cwd)
             info = format_result(result)
             if passed:
-                log(f"  ✓ conditions: passed \033[2m{info}\033[0m" if info else "  ✓ all conditions passed")
+                log(f"  ✓ conditions: \033[32mpassed\033[0m \033[2m{info}\033[0m" if info else "  ✓ all conditions \033[32mpassed\033[0m")
             else:
-                log(f"  ✗ conditions: failed \033[2m{info}\033[0m" if info else "  ✗ conditions not met")
+                log(f"  ✗ conditions: \033[31mfailed\033[0m \033[2m{info}\033[0m" if info else "  ✗ conditions \033[31mnot met\033[0m")
                 for cond, ok_cond in details:
                     log(f"    {'✓' if ok_cond else '✗'} {cond}")
                 log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
