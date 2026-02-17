@@ -118,6 +118,13 @@ def ensure_project_worktree(project_path):
 
     return wt_dir
 
+def build_prologue():
+    """Build prologue instruction prepended to all task prompts."""
+    prologue_md = ROOT / "PROLOGUE.md"
+    if not prologue_md.exists():
+        return ""
+    return prologue_md.read_text()
+
 def build_epilogue(task, project_dir):
     """Build epilogue instruction appended to project task prompts."""
     epilogue_md = ROOT / "EPILOGUE.md"
@@ -326,6 +333,130 @@ def _write_task(slug, body, handler=None, tools=None):
     sh("git", "add", str(path.relative_to(ROOT)))
     sh("git", "commit", "-m", f"New Task: {name}")
     return name
+
+def _plan_briefing(tasks):
+    """Build a rich task body for the planner from current factory state."""
+    sections = []
+
+    # --- Queue ---
+    completed = [t for t in tasks if t["status"] == "completed"]
+    stopped = [t for t in tasks if t["status"] == "stopped"]
+    remaining = [t for t in tasks if t["status"] not in ("completed", "stopped")]
+    lines = ["## Queue", ""]
+    for label, group in [("Completed", completed), ("Stopped", stopped), ("Remaining", remaining)]:
+        if group:
+            lines.append(f"**{label}**")
+            for t in group:
+                detail = ""
+                if t["parent"]:
+                    detail += f" (parent: {t['parent']})"
+                sr = t.get("sections", {}).get("stop_reason") or ""
+                if not sr:
+                    # check frontmatter stop_reason
+                    meta = _parse_frontmatter(t["_path"].read_text())
+                    if meta:
+                        sr = meta[0].get("stop_reason", "")
+                if sr:
+                    detail += f" [stop_reason: {sr}]"
+                lines.append(f"- {t['name']}{detail}")
+            lines.append("")
+    if not any([completed, stopped, remaining]):
+        lines.append("Empty queue — first planning cycle.")
+        lines.append("")
+    sections.append("\n".join(lines))
+
+    # --- Active initiatives ---
+    ini_dir = ROOT / "initiatives"
+    lines = ["## Active Initiatives", ""]
+    found = False
+    if ini_dir.exists():
+        for f in sorted(ini_dir.glob("*.md")):
+            parsed = _parse_frontmatter(f.read_text())
+            if parsed and parsed[0].get("status") == "active":
+                lines.append(f"### {f.stem}")
+                lines.append(f.read_text())
+                lines.append("")
+                found = True
+    if not found:
+        lines.append("None active.")
+        lines.append("")
+    sections.append("\n".join(lines))
+
+    # --- Active projects ---
+    prj_dir = ROOT / "projects"
+    lines = ["## Active Projects", ""]
+    found = False
+    if prj_dir.exists():
+        for f in sorted(prj_dir.glob("*.md")):
+            parsed = _parse_frontmatter(f.read_text())
+            if parsed and parsed[0].get("status") == "active":
+                lines.append(f"### {f.stem}")
+                lines.append(f.read_text())
+                lines.append("")
+                found = True
+    if not found:
+        lines.append("None active.")
+        lines.append("")
+    sections.append("\n".join(lines))
+
+    # --- Source purpose measures ---
+    purpose_path = ROOT / "knowledge" / "source" / "PURPOSE.md"
+    lines = ["## Source Purpose Measures", ""]
+    if purpose_path.exists():
+        text = purpose_path.read_text()
+        m = re.search(r'^## Measures\s*\n(.*?)(?=\n## |\Z)', text, re.DOTALL | re.MULTILINE)
+        if m:
+            lines.append(m.group(1).strip())
+        else:
+            lines.append("No Measures section found in PURPOSE.md.")
+    else:
+        lines.append("knowledge/source/PURPOSE.md not found.")
+    lines.append("")
+    sections.append("\n".join(lines))
+
+    # --- Scarcity counts ---
+    ini_active = sum(1 for f in (ini_dir.glob("*.md") if ini_dir.exists() else [])
+                     if (p := _parse_frontmatter(f.read_text())) and p[0].get("status") == "active")
+    prj_active = sum(1 for f in (prj_dir.glob("*.md") if prj_dir.exists() else [])
+                     if (p := _parse_frontmatter(f.read_text())) and p[0].get("status") == "active")
+    task_active = sum(1 for t in tasks if t["status"] == "active")
+    task_active_unparented = sum(1 for t in tasks if t["status"] == "active" and not t["parent"])
+    sections.append("\n".join([
+        "## Scarcity", "",
+        f"- Initiatives: {ini_active} active (limit: 1)",
+        f"- Projects: {prj_active} active (limit: 2)",
+        f"- Tasks: {task_active} active (limit: 3)",
+        f"- Unparented tasks: {task_active_unparented} active (limit: 1)",
+        "",
+    ]))
+
+    # --- Format references ---
+    sections.append("\n".join([
+        "## Format References", "",
+        "- `specs/INITIATIVES.md` — initiative format",
+        "- `specs/PROJECTS.md` — project format",
+        "- `specs/TASKS.md` — task format",
+        "- `knowledge/source/PURPOSE.md` — source purpose, measures, and tests",
+        "- `knowledge/source/PARTS.md` — source constituents",
+        "",
+    ]))
+
+    return "\n".join(sections)
+
+def _fix_briefing(task, details):
+    """Build a rich task body for the fixer from a failed task."""
+    task_content = task["_path"].read_text()
+    task_rel = task["_path"].relative_to(ROOT)
+    cond_report = "\n".join(
+        f"  {'✓' if ok else '✗'} {cond}" for cond, ok in (details or []))
+    body = f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
+    body += f"## Condition Results\n\n{cond_report}\n\n"
+    rlp = STATE_DIR / "last_run.jsonl"
+    if rlp.exists():
+        run_log_tail = "\n".join(rlp.read_text().splitlines()[-50:])
+        if run_log_tail:
+            body += f"## Run Log (last 50 lines)\n\n```\n{run_log_tail}\n```\n"
+    return body
 
 # --- completion checks ---
 
@@ -752,7 +883,8 @@ def run():
             if blocked:
                 log("stopping — tasks exist but are blocked on dependencies")
                 return
-            _write_task("plan", "", handler="planner",
+            _write_task("plan", _plan_briefing(all_tasks),
+                        handler="planner",
                         tools="Read,Write,Edit,Glob,Grep,Bash")
             just_planned = True
             continue
@@ -771,7 +903,8 @@ def run():
         update_task_meta(task, status="active", pid=str(os.getpid()))
         commit_task(task, f"Start Task: {name}")
         # build prompt: instruction body + context + verify (exclude done)
-        prompt_parts = [task["prompt"]]
+        prologue = build_prologue()
+        prompt_parts = [prologue, task["prompt"]] if prologue else [task["prompt"]]
         for section in ("context", "verify"):
             if section in task["sections"]:
                 prompt_parts.append(f"## {section.title()}\n\n{task['sections'][section]}")
@@ -878,19 +1011,8 @@ def run():
 
         # write fixer task on incomplete (not for planner/fixer tasks)
         if not passed and task.get("handler") not in ("planner", "fixer"):
-            task_content = task["_path"].read_text()
-            task_rel = task["_path"].relative_to(ROOT)
-            cond_report = "\n".join(
-                f"  {'✓' if ok_cond else '✗'} {cond}" for cond, ok_cond in (details or []))
-            run_log_tail = ""
-            rlp = STATE_DIR / "last_run.jsonl"
-            if rlp.exists():
-                run_log_tail = "\n".join(rlp.read_text().splitlines()[-50:])
-            body = f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
-            body += f"## Condition Results\n\n{cond_report}\n\n"
-            if run_log_tail:
-                body += f"## Run Log (last 50 lines)\n\n```\n{run_log_tail}\n```\n"
-            _write_task("fix", body, handler="fixer",
+            _write_task("fix", _fix_briefing(task, details),
+                        handler="fixer",
                         tools="Read,Write,Edit,Glob,Grep,Bash")
 
 if __name__ == "__main__":
@@ -899,78 +1021,15 @@ RUNNER
 chmod +x "$1/$PY_NAME"
 }
 
-# --- writer: CLAUDE.md ---
-write_claude_md() {
+# --- writer: PROLOGUE.md ---
+write_prologue_md() {
 local REPO="$(basename "$SOURCE_DIR")"
-cat > "$1/CLAUDE.md" <<CLAUDE
-# Factory
-
-Automated software factory for \`$REPO\`.
+cat > "$1/PROLOGUE.md" <<PROLOGUE
+You are a coding agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata for \`$REPO\`.
 
 Source repo: \`$SOURCE_DIR\`
-Factory dir: \`$FACTORY_DIR\`
-
-You are a coding agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata. The source repo is separate — project-specific work happens in worktrees under \`worktrees/\`, each on a branch prefixed \`factory/\`.
-
-## Read these first
-
-- \`specs/AGENTS.md\` — format specs for how agents are structured and how they read tasks.
-- \`specs/INITIATIVES.md\`, format specs for high-level goals
-- \`specs/PROJECTS.md\` — format specs for scoped deliverables under initiatives.
-- \`specs/TASKS.md\` — format specs for atomic work items under projects.
-
-## Knowledge
-
-The factory maintains knowledge of two entities:
-
-- \`knowledge/factory/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the factory itself. The fixer reads these.
-- \`knowledge/source/\` — PRINCIPLES.md, PARTS.md, PURPOSE.md for the source repo. The planner reads these.
-
-## Work model
-
-Three flat folders. No nesting. Relationships are defined by frontmatter fields.
-
-- \`initiatives/\` — high-level goals
-- \`projects/\` — scoped deliverables under an initiative
-- \`tasks/\` — atomic units of work under a project
-
-### Lifecycle
-
-All items use the same states:
-
-- \`backlog\` → \`active\` → \`completed\`
-- \`active\` → \`suspended\` (intentionally paused, will resume)
-- \`active\` → \`stopped\` (ended, will not resume)
-
-There is no \`failed\` state. Failure is \`status: stopped\` with \`stop_reason: failed\`.
-
-### Relationships
-
-- \`parent:\` links a task → project or project → initiative.
-- \`previous:\` defines sequential dependency between tasks.
-- No \`parent:\` means the task is a factory maintenance task.
-
-### Scarcity Invariants (Must Always Hold)
-
-- Exactly **1 active initiative**
-- At most **2 active projects**
-- At most **3 active tasks**
-- At most **1 active unparented (factory) task**
-
-### Read-set rule
-
-You may only read items with \`status\` in (\`active\`, \`backlog\`, \`suspended\`). Completed and stopped work lives in git history.
-
-## Agent rules
-
-1. **Do the task.** Complete what the prompt asks. Fully.
-2. **Do only the task.** Do not add work the prompt didn't ask for.
-3. **Commit your work.** \`git add\` and \`git commit\` with a short message describing what changed.
-4. **Stop when done.** Do not loop. Do not start the next task. Do not look for more work.
-5. **Do not modify this file** unless a task explicitly asks you to.
-
-For the full interpretation protocol, see specs/AGENTS.md → "How agents read tasks."
-CLAUDE
+Factory repo: \`$FACTORY_DIR\`
+PROLOGUE
 }
 
 # --- writer: AGENTS.md ---
@@ -1265,6 +1324,7 @@ If any answer is no, the project needs rework.
 - **Projects are independent slices.** Each project delivers value on its own. If project B only makes sense after project A ships, they may be one project with sequenced tasks, not two projects.
 - **Scope is the boundary between siblings.** When an initiative has multiple projects, the scope sections collectively partition the initiative's problem space. Gaps and overlaps are both failures.
 - **Deliverables map to tasks.** If you can't see how a deliverable becomes 1–3 tasks with concrete Done conditions, the deliverable is too abstract. Break it down before creating the project.
+- **At most two active projects at a time.** Scarcity forces focus. If a project is stalled or superseded, stop it before starting another.
 PROJECTS
 }
 
@@ -1362,6 +1422,7 @@ If any answer is no, the task needs rework.
 - **The task carries the what. The agent carries the how.** Method, procedure, and technique do not belong in task prompts. If the prompt tells the agent how to do its work, the instructions belong in the agent definition instead.
 - **Context is orientation, not instruction.** It explains why the work matters. Agents read it but do not execute it.
 - **Scope is sacred.** A task does what the prompt says and nothing else. Adjacent improvements, refactors, and "while I'm here" fixes are future tasks.
+- **At most three active tasks at a time; at most one active unparented (factory) task.** Scarcity keeps the queue shallow. Finish or stop tasks before adding more.
 
 ### Done
 
@@ -1480,7 +1541,6 @@ You plan work. You are invoked when no ready task exists.
 ## Capabilities
 
 - Read all files in the factory repo: initiatives, projects, tasks, and agent definitions
-- Read \`knowledge/source/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md)
 - Run commands in the source repo to examine actual state
 - Write and edit initiative, project, and task files
 - Update frontmatter status on existing items
@@ -1489,92 +1549,60 @@ You do not commit. The runner commits your work.
 
 ## Method
 
-Read \`specs/INITIATIVES.md\`, \`specs/PROJECTS.md\`, and \`specs/TASKS.md\` for format specs. Read \`knowledge/source/PURPOSE.md\`, \`knowledge/source/PARTS.md\`, and \`knowledge/source/PRINCIPLES.md\` for orientation.
+Your task body contains the current queue, active initiatives and projects, source purpose measures, scarcity counts, and format references. Start there.
 
 ### 1. Assess
 
-Read all active and backlog items across all three levels. For each active item:
+For each active item: is it still the highest-leverage work available? Is it making progress, or stuck? Has completed work changed what's most important?
 
-- Is it still the highest-leverage work available?
-- Is it making progress, or stuck?
-- Has completed work changed what's most important?
-- Are backlog items now more urgent than active ones?
+Mark stale or superseded items `stopped` with `stop_reason: superseded`.
 
-Mark stale or superseded items `stopped` with `stop_reason: superseded`. Ignore completed and stopped items unless investigating regressions.
-
-If any task has `stop_reason: failed` or was marked incomplete, follow `agents/FIXER.md` before proceeding. The system must learn from every failure before creating new work.
+If any task has `stop_reason: failed` or was marked incomplete, follow `agents/FIXER.md` before proceeding.
 
 ### 2. Complete
 
-Cascade finished work upward:
-
-- All tasks under a project completed → mark the project `completed`.
-- All projects under an initiative completed → mark the initiative `completed`.
+Cascade finished work upward: all tasks under a project completed → mark the project `completed`. All projects under an initiative completed → mark the initiative `completed`.
 
 ### 3. Fill
 
 Work top-down. Only create what is missing.
 
-**Initiatives** — If no active initiative exists:
-- Read \`knowledge/source/PURPOSE.md\`. Identify the highest-leverage gap between current state and purpose.
-- Write the Problem section from evidence — run commands, read files, find concrete problems in the source repo.
-- Outcome must connect to a specific bullet in \`knowledge/source/PURPOSE.md\`.
-- Measures must be observable and drawn from \`knowledge/source/PURPOSE.md\`'s Measures section.
-- Create 1–3 backlog initiatives. Activate exactly one.
+**Initiatives** — If none active: identify the highest-leverage gap between current state and purpose. Write the Problem section from evidence — run commands, read files, find concrete problems. Create 1–3 backlog initiatives. Activate exactly one.
 
-**Projects** — If the active initiative has no active project:
-- Read the initiative's Problem and Outcome. Decompose into independent, shippable slices — each project delivers value on its own.
-- Deliverables are noun phrases: files, behaviors, capabilities.
-- Acceptance criteria must map to Done conditions the runner can check.
-- Create as many projects as the initiative needs. Activate 1–2.
+**Projects** — If the active initiative has no active project: decompose into independent, shippable slices. Create as many as the initiative needs. Activate 1–2.
 
-**Tasks** — If the active project has no ready tasks:
-- Read the project's Deliverables and Acceptance. Each task produces one deliverable or a clear fraction of one.
-- Prompts must name specific files, functions, and behaviors.
-- Done conditions must be strict and automatable.
-- Chain tasks with `previous` when order matters.
-- Create all tasks needed to complete the project. Activate exactly one.
-- Name files `NNNN-slug.md`. Scan the target directory, find the highest existing number, and use the next one (start at 0001 if empty).
-- Always include `author: planner` in frontmatter.
+**Tasks** — If the active project has no ready tasks: each task produces one deliverable or a clear fraction of one. Create all tasks needed. Activate exactly one.
+
+Read the spec files listed in Format References for field requirements and naming conventions.
 
 ### 4. Validate
 
-Confirm before finishing:
-
-- Scarcity invariants hold.
-- At least one task is ready to run (active, unblocked, conditions unmet).
-- If not, something went wrong — investigate and fix.
+Confirm scarcity invariants hold and at least one task is ready to run (active, unblocked, conditions unmet). If not, investigate and fix.
 
 ## Halt Condition
 
-If you cannot trace new work to a specific bullet in \`knowledge/source/PURPOSE.md\`, do not create it. If \`knowledge/source/PURPOSE.md\` is missing or empty, create no work — write a note explaining that planning is blocked until purpose is established.
+If you cannot trace new work to a specific bullet in \`knowledge/source/PURPOSE.md\`, do not create it. If PURPOSE.md is missing or empty, create no work — write a note explaining that planning is blocked.
 
 ## Validation
 
 For every item you create or activate:
 
-- Can you trace it to a specific bullet in \`knowledge/source/PURPOSE.md\`? Initiative → purpose of the whole. Project → purpose of a constituent or concern. Task → a specific observable change.
+- Can you trace it to \`knowledge/source/PURPOSE.md\`?
 - Does it have concrete, testable success criteria?
 - Is it the highest-leverage thing at its level?
-- If a senior engineer reviewed it, would the problem statement, deliverables, and acceptance criteria hold up?
+- Would a senior engineer's review of the problem statement, deliverables, and acceptance criteria hold up?
 
-For the plan as a whole:
-
-- Did you create work top-down (initiative → project → task), or did you skip levels?
-- Is every active item actually the most important thing at its level, or just the most obvious?
+For the plan as a whole: did you work top-down, or skip levels?
 
 ## Rules
 
-- Every initiative traces to \`knowledge/source/PURPOSE.md\`. Every project traces to a constituent in \`knowledge/source/PARTS.md\`. Every task delivers a project artifact. No line, no work.
-- Scarcity invariants: exactly 1 active initiative, at most 2 active projects, at most 3 active tasks, at most 1 active unparented task. Scarcity governs active items, not backlog.
-- No vague initiatives. "Improve code quality" is not a problem statement. Name the specific gap, with evidence from the source repo.
-- No kitchen-sink projects. Decompose into independent, shippable slices.
-- No aspirational deliverables. "Better test coverage" is not a deliverable. "Unit tests for auth module (auth/*.test.ts)" is.
-- No untestable acceptance. "Code is cleaner" is not checkable. Acceptance criteria must map to automatable Done conditions.
+- Every initiative traces to PURPOSE.md. Every project traces to a constituent in PARTS.md. Every task delivers a project artifact. No line, no work.
+- No vague initiatives. Name the specific gap, with evidence.
+- No aspirational deliverables. Name concrete artifacts.
+- No untestable acceptance. Criteria must map to automatable Done conditions.
 - No busywork tasks. Every task must advance a project deliverable.
 - No over-planning. Plan enough to maintain flow, not to predict the future.
-- Never create tasks with `handler: planner`. Planning is triggered automatically by the runner when the task queue empties. Use the `previous` field to sequence dependent work — don't insert plan tasks as waypoints.
-- No copy-paste structure. Each initiative addresses a different problem — the structure reflects that.
+- No copy-paste structure. Each initiative addresses a different problem.
 PLANNER
 }
 
@@ -1593,7 +1621,7 @@ You diagnose failures and fix the system that produced them.
 ## Capabilities
 
 - Read task files, run logs, and git diffs of agent output
-- Read all factory-internal files: factory.py, agent definitions, format specs, CLAUDE.md
+- Read all factory-internal files: factory.py, agent definitions, format specs, PROLOGUE.md
 - Read \`knowledge/factory/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md) and \`knowledge/source/\` (PURPOSE.md, PARTS.md, PRINCIPLES.md)
 - Run commands to examine state
 - Write and edit factory-internal files
@@ -1629,7 +1657,7 @@ Read the Measures in \`knowledge/factory/PURPOSE.md\`. The failure violated at l
 Create a new task that closes the gap:
 
 - Include `author: fixer` in frontmatter.
-- Target a factory-internal file — \`factory.py\`, \`CLAUDE.md\`, an agent definition, a format spec. Not the source repo.
+- Target a factory-internal file — \`factory.py\`, \`PROLOGUE.md\`, an agent definition, a format spec. Not the source repo.
 - The fix must either strengthen the violated measure or add the check that should have caught the failure. Connect it to a specific bullet in \`knowledge/factory/PURPOSE.md\`.
 - Done conditions verify the system change, not the original deliverable.
 
@@ -1796,7 +1824,7 @@ write_files() {
   printf '%s\n' state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$dir/.gitignore"
   printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
   write_runner "$dir"
-  write_claude_md "$dir"
+  write_prologue_md "$dir"
   write_agents_md "$dir/specs"
   write_initiatives_md "$dir/specs"
   write_projects_md "$dir/specs"
