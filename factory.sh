@@ -1840,6 +1840,15 @@ teardown() {
 }
 
 # --- handle commands ---
+bootstrap() {
+  setup_excludes
+  write_files "$FACTORY_DIR"
+  setup_repo
+  write_launcher "$SOURCE_DIR"
+  [[ "$KEEP_SCRIPT" == true ]] || remove_script
+}
+
+# --- handle commands ---
 case "${1:-}" in
   help|--help|-h)
     echo "usage: ./factory.sh "
@@ -1857,11 +1866,7 @@ case "${1:-}" in
       echo -e "\033[33mfactory:\033[0m already bootstrapped"
       exit 0
     fi
-    setup_excludes
-    write_files "$FACTORY_DIR"
-    setup_repo
-    write_launcher "$SOURCE_DIR"
-    [[ "$KEEP_SCRIPT" == true ]] || remove_script
+    bootstrap
     echo -e "\033[33mfactory:\033[0m bootstrap complete"
     exit 0
     ;;
@@ -1884,15 +1889,7 @@ case "${1:-}" in
       cd "$FACTORY_DIR"
       exec python3 "$PY_NAME"
     fi
-
-    # otherwise bootstrap
-    setup_excludes
-    write_files "$FACTORY_DIR"
-    setup_repo
-    write_launcher "$SOURCE_DIR"
-    [[ "$KEEP_SCRIPT" == true ]] || remove_script
-
-    # launch the factory
+    bootstrap
     cd "$FACTORY_DIR"
     exec python3 "$PY_NAME"
     ;;
