@@ -33,9 +33,10 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/` | Standalone git repo for factory metadata |
 | `.factory/factory.py` | Python orchestrator |
 | `.factory/CLAUDE.md` | Agent's operating instructions (Purpose/Measures/Tests) |
-| `.factory/INITIATIVES.md` | Initiative format spec |
-| `.factory/PROJECTS.md` | Project format spec |
-| `.factory/TASKS.md` | Task format spec |
+| `.factory/specs/AGENTS.md` | Agent format spec |
+| `.factory/specs/INITIATIVES.md` | Initiative format spec |
+| `.factory/specs/PROJECTS.md` | Project format spec |
+| `.factory/specs/TASKS.md` | Task format spec |
 | `.factory/PURPOSE.md` | Purpose, Measures, and Tests (created by bootstrap task) |
 | `.factory/EPILOGUE.md` | Project task epilogue template |
 | `.factory/agents/` | Agent persona definitions (markdown) |

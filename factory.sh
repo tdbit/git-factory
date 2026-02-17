@@ -907,9 +907,10 @@ You are a coding agent operating inside \`.factory/\`, a standalone git repo tha
 
 ## Read these first
 
-- \`AGENTS.md\` — how agents are structured and how they read tasks.
-- \`TASKS.md\` — how tasks are structured and how they are drafted.
-- \`INITIATIVES.md\`, \`PROJECTS.md\` — format specs for the work hierarchy.
+- \`specs/AGENTS.md\` — format specs for how agents are structured and how they read tasks.
+- \`specs/INITIATIVES.md\`, format specs for high-level goals
+- \`specs/PROJECTS.md\` — format specs for scoped deliverables under initiatives.
+- \`specs/TASKS.md\` — format specs for atomic work items under projects.
 
 ## Understanding
 
@@ -961,7 +962,7 @@ You may only read items with \`status\` in (\`active\`, \`backlog\`, \`suspended
 4. **Stop when done.** Do not loop. Do not start the next task. Do not look for more work.
 5. **Do not modify this file** unless a task explicitly asks you to.
 
-For the full interpretation protocol, see AGENTS.md → "How agents read tasks."
+For the full interpretation protocol, see specs/AGENTS.md → "How agents read tasks."
 CLAUDE
 }
 
@@ -1481,7 +1482,7 @@ You do not commit. The runner commits your work.
 
 ## Method
 
-Read `INITIATIVES.md`, `PROJECTS.md`, and `TASKS.md` for format specs. Read the source repo's PURPOSE.md, PARTS.md, and PRINCIPLES.md for orientation.
+Read `specs/INITIATIVES.md`, `specs/PROJECTS.md`, and `specs/TASKS.md` for format specs. Read the source repo's PURPOSE.md, PARTS.md, and PRINCIPLES.md for orientation.
 
 ### 1. Assess
 
@@ -1768,7 +1769,7 @@ remove_script() {
 write_files() {
   local dir="$1"
   mkdir -p "$dir"
-  for d in tasks hooks state agents initiatives projects logs worktrees; do
+  for d in tasks hooks state agents initiatives projects logs worktrees specs; do
     mkdir -p "$dir/$d"
   done
   cp "$0" "$dir/factory.sh"
@@ -1776,10 +1777,10 @@ write_files() {
   printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
   write_runner "$dir"
   write_claude_md "$dir"
-  write_agents_md "$dir"
-  write_initiatives_md "$dir"
-  write_projects_md "$dir"
-  write_tasks_md "$dir"
+  write_agents_md "$dir/specs"
+  write_initiatives_md "$dir/specs"
+  write_projects_md "$dir/specs"
+  write_tasks_md "$dir/specs"
   write_epilogue_md "$dir"
   write_planner_md "$dir/agents"
   write_fixer_md "$dir/agents"
