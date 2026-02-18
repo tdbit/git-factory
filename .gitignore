@@ -2,3 +2,4 @@
 factory_dump
 .factory
 .git-factory
+__pycache__

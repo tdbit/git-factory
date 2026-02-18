@@ -770,10 +770,7 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
                             maxw = shutil.get_terminal_size((80, 24)).columns - 22
                             detail = cmd[:maxw] + ("…" if len(cmd) > maxw else "")
                         lname = name.lower()
-                        if detail:
-                            _show_progress(f"\033[36m  → {lname}:\033[0m \033[2m{detail}\033[0m")
-                        else:
-                            _show_progress(f"\033[36m  → {lname}\033[0m")
+                        _show_progress(f"\033[36m  → {lname}{': ' + detail if detail else ''}\033[0m")
             elif t == "result":
                 result = ev
     reader = threading.Thread(target=read_stream, daemon=True)
@@ -1491,14 +1488,14 @@ For each question: investigate first, then state what you found. Use whatever me
 
 ### 4. Create planner task
 
-When all three questions are answered, create a task file in `tasks/` for the planner. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-plan.md`.
+When all three questions are answered, create a task file in `tasks/`. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-[task-author]-understanding.md`.  The [task-author] **MUST** be the author of your task prompt.
 
 Frontmatter:
 ```
 ---
 author: understand
-handler: planner
-tools: Read,Write,Edit,Glob,Grep,Bash
+handler: [task-author: the author of the current understand task]
+previous: [task-name: the name of the current understand task]
 status: backlog
 ---
 ```
