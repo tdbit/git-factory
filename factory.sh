@@ -34,9 +34,9 @@ done
 # --- check dependencies ---
 [[ -n "$PROVIDER" ]] || { echo -e "\033[31mfactory:\033[0m error: no agent CLI found (tried: claude, claude-code, codex)" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo -e "\033[31mfactory:\033[0m error: python3 is not installed." >&2; exit 1; }
-# --- writer: python runner ---
+
 write_runner() {
-cat > "$1/$PY_NAME" <<'RUNNER'
+write_python() {
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, ast, json, threading, atexit
 from pathlib import Path
@@ -596,7 +596,6 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
         def _handle_event(ev):
             etype = ev.get("type")
             item = ev.get("item") or {}
-            # shorten long commands to first line
             cmd_val = item.get("command") or ""
             if cmd_val:
                 first = cmd_val.splitlines()[0]
@@ -939,7 +938,6 @@ def run():
         agent_committed = head_before != head_after
 
         if not ok:
-            # reset work dir first, then update meta (so reset doesn't wipe the meta change)
             if is_project_task:
                 try:
                     subprocess.check_output(["git", "checkout", "--", "."], cwd=work_dir, stderr=subprocess.STDOUT)
@@ -1021,7 +1019,7 @@ PROLOGUE
 }
 
 # --- writer: AGENTS.md ---
-write_agents_md() {
+write_specs() {
 cat > "$1/AGENTS.md" <<'AGENTS'
 # AGENTS.md
 
@@ -1129,10 +1127,6 @@ Every agent interprets tasks the same way. This protocol is the shared contract 
 - **Validation catches the agent's own failure modes.** Write validation for the mistakes this specific agent is likely to make, not generic quality checks.
 - **Interpretation is uniform.** Every agent reads tasks the same way. Done first, prompt second, context for orientation, verify before commit. No exceptions.
 AGENTS
-}
-
-# --- writer: INITIATIVES.md ---
-write_initiatives_md() {
 cat > "$1/INITIATIVES.md" <<'INITIATIVES'
 # Initiatives
 
@@ -1220,10 +1214,6 @@ If any answer is no, the initiative needs rework.
 - **Scope prevents drift.** Without explicit exclusions, every initiative becomes "make everything better." The exclusions matter as much as the inclusions.
 - **One active initiative at a time.** Scarcity forces prioritization. If the current initiative isn't the most important thing, stop it and start one that is.
 INITIATIVES
-}
-
-# --- writer: PROJECTS.md ---
-write_projects_md() {
 cat > "$1/PROJECTS.md" <<'PROJECTS'
 # Projects
 
@@ -1314,10 +1304,6 @@ If any answer is no, the project needs rework.
 - **Deliverables map to tasks.** If you can't see how a deliverable becomes 1–3 tasks with concrete Done conditions, the deliverable is too abstract. Break it down before creating the project.
 - **At most two active projects at a time.** Scarcity forces focus. If a project is stalled or superseded, stop it before starting another.
 PROJECTS
-}
-
-# --- writer: TASKS.md ---
-write_tasks_md() {
 cat > "$1/TASKS.md" <<'TASKS'
 # TASKS.md
 
@@ -1435,8 +1421,8 @@ Rules for done conditions:
 TASKS
 }
 
-# --- writer: agents/UNDERSTAND.md ---
-write_understand_md() {
+# --- writer: agents/ ---
+write_agents() {
 cat > "$1/UNDERSTAND.md" <<'UNDERSTAND'
 ---
 tools: Read,Glob,Grep,Write
@@ -1531,10 +1517,6 @@ Specific signals that you're stuck:
 - Prefer evidence to inference. Name the thing, not the category.
 - Stop when done. Don't generate understanding you can't ground.
 UNDERSTAND
-}
-
-# --- writer: agents/PLANNER.md ---
-write_planner_md() {
 cat > "$1/PLANNER.md" <<'PLANNER'
 ---
 tools: Read,Write,Edit,Glob,Grep,Bash
@@ -1626,10 +1608,6 @@ For the plan as a whole: did you work top-down, or skip levels?
 - No over-planning. Plan enough to maintain flow, not to predict the future.
 - No copy-paste structure. Each initiative addresses a different problem.
 PLANNER
-}
-
-# --- writer: agents/FIXER.md ---
-write_fixer_md() {
 cat > "$1/FIXER.md" <<'FIXER'
 ---
 tools: Read,Write,Edit,Glob,Grep,Bash
@@ -1721,10 +1699,8 @@ cat > "$1/EPILOGUE.md" <<'EPILOGUE'
 
 ## Epilogue
 
-You are working in a project worktree at `{project_dir}`.
-Your code changes go here.
+You are working in a project worktree at `{project_dir}`. Your code changes go here.  When you are done:
 
-When you are done:
 1. Stage and commit your code changes in this worktree (the current directory).
    Use a short, descriptive commit message.
 2. Stop. The runner will handle bookkeeping.
@@ -1793,17 +1769,12 @@ write_files() {
   done
   cp "$0" "$dir/factory.sh"
   printf '%s\n' state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$dir/.gitignore"
-  printf '{"default_branch": "%s", "project_worktrees": "%s", "provider": "%s"}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
-  write_runner "$dir"
+  printf '{\n"default_branch": "%s",\n"project_worktrees": "%s",\n"provider": "%s"\n}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
+  write_python "$dir"
   write_prologue_md "$dir"
-  write_agents_md "$dir/specs"
-  write_initiatives_md "$dir/specs"
-  write_projects_md "$dir/specs"
-  write_tasks_md "$dir/specs"
   write_epilogue_md "$dir"
-  write_understand_md "$dir/agents"
-  write_planner_md "$dir/agents"
-  write_fixer_md "$dir/agents"
+  write_specs "$dir/specs"
+  write_agents "$dir/agents"
   write_hook "$dir/hooks"
 }
 
