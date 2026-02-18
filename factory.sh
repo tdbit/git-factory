@@ -35,20 +35,330 @@ done
 [[ -n "$PROVIDER" ]] || { echo -e "\033[31mfactory:\033[0m error: no agent CLI found (tried: claude, claude-code, codex)" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo -e "\033[31mfactory:\033[0m error: python3 is not installed." >&2; exit 1; }
 
-write_runner() {
+# --- writer: library ---
 write_python() {
-#!/usr/bin/env python3
-import os, sys, re, signal, time, shutil, subprocess, ast, json, threading, atexit
+cat > "$1/library.py" <<'LIBRARY'
+import re, ast, subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 TASKS_DIR = ROOT / "tasks"
-AGENTS_DIR = ROOT / "agents"
 STATE_DIR = ROOT / "state"
-LOGS_DIR = ROOT / "logs"
-# parent repo — ROOT is .factory/, so parent is one level up
 PARENT_REPO = ROOT.parent
 DEFAULT_TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
+
+
+def parse_frontmatter(text):
+    """Split text into (meta_dict, body_string) or None if invalid."""
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    _, fm, body = parts
+    meta = {}
+    for line in fm.strip().splitlines():
+        key, _, val = line.partition(":")
+        if key.strip():
+            meta[key.strip()] = val.strip()
+    return meta, body
+
+
+def _task_line(t):
+    """Format one task as a list item with parent and stop_reason."""
+    parts = [t["name"]]
+    if t["parent"]:
+        parts.append(f"(parent: {t['parent']})")
+    if sr := t.get("stop_reason"):
+        parts.append(f"[stop_reason: {sr}]")
+    return "- " + " ".join(parts)
+
+
+def _active_items(dirname, heading):
+    """Scan a directory for active items, return (markdown section, count)."""
+    if not (d := ROOT / dirname).exists():
+        return f"## {heading}\n\nNone active.\n", 0
+    lines = [f"## {heading}", ""]
+    count = 0
+    for f in sorted(d.glob("*.md")):
+        text = f.read_text()
+        parsed = parse_frontmatter(text)
+        if parsed and parsed[0].get("status") == "active":
+            lines.extend([f"### {f.stem}", text, ""])
+            count += 1
+    if not count:
+        return f"## {heading}\n\nNone active.\n", 0
+    return "\n".join(lines), count
+
+
+# scarcity limits
+LIMITS = {"initiatives": 1, "projects": 2, "tasks": 3, "unparented_tasks": 1}
+
+
+def survey(tasks):
+    """Scan queue, initiatives, projects, scarcity for the planner."""
+    sections = []
+
+    # --- Queue ---
+    completed = [t for t in tasks if t["status"] == "completed"]
+    stopped = [t for t in tasks if t["status"] == "stopped"]
+    remaining = [t for t in tasks if t["status"] not in ("completed", "stopped")]
+
+    lines = ["## Queue", ""]
+    if not any([completed, stopped, remaining]):
+        lines.append("Empty queue — first planning cycle.")
+        lines.append("")
+    else:
+        if completed:
+            lines.append(f"**Completed** ({len(completed)} tasks)")
+            lines.append("")
+        if stopped:
+            lines.append("**Stopped**")
+            lines.extend(_task_line(t) for t in stopped)
+            lines.append("")
+        if remaining:
+            lines.append("**Remaining**")
+            lines.extend(_task_line(t) for t in remaining)
+            lines.append("")
+    sections.append("\n".join(lines))
+
+    # --- Active initiatives and projects ---
+    ini_section, ini_active = _active_items("initiatives", "Active Initiatives")
+    prj_section, prj_active = _active_items("projects", "Active Projects")
+    sections.append(ini_section)
+    sections.append(prj_section)
+
+    # --- Scarcity ---
+    task_active = sum(1 for t in tasks if t["status"] == "active")
+    unparented = sum(1 for t in tasks if t["status"] == "active" and not t["parent"])
+    counts = {"initiatives": ini_active, "projects": prj_active,
+              "tasks": task_active, "unparented_tasks": unparented}
+    lines = ["## Scarcity", ""]
+    for key, limit in LIMITS.items():
+        lines.append(f"- {key.replace('_', ' ').title()}: {counts[key]} active (limit: {limit})")
+    lines.append("")
+    sections.append("\n".join(lines))
+
+    # --- Format references ---
+    sections.append("\n".join([
+        "## Format References", "",
+        "- `specs/INITIATIVES.md` — initiative format",
+        "- `specs/PROJECTS.md` — project format",
+        "- `specs/TASKS.md` — task format",
+        "",
+    ]))
+
+    return "\n".join(sections)
+
+
+def triage(task, details):
+    """Collect failed task, condition results, log tail for the fixer."""
+    task_content = task["_path"].read_text()
+    task_rel = task["_path"].relative_to(ROOT)
+    cond_report = "\n".join(
+        f"  {'✓' if ok else '✗'} {cond}" for cond, ok in (details or []))
+    body = f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
+    body += f"## Condition Results\n\n{cond_report}\n\n"
+    rlp = STATE_DIR / "last_run.jsonl"
+    if rlp.exists():
+        run_log_tail = "\n".join(rlp.read_text().splitlines()[-50:])
+        if run_log_tail:
+            body += f"## Run Log (last 50 lines)\n\n```\n{run_log_tail}\n```\n"
+    return body
+
+
+# --- task parsing ---
+
+def parse_task(path):
+    """Parse a task markdown file into a dict, or None if malformed."""
+    text = path.read_text()
+    parsed = parse_frontmatter(text)
+    if not parsed:
+        return None
+    meta, body = parsed
+    sections = {}
+    current_section = None
+    current_lines = []
+    prompt_lines = []
+    for line in body.split("\n"):
+        m = re.match(r'^##\s+(.+)$', line)
+        if m:
+            if current_section:
+                sections[current_section] = "\n".join(current_lines).strip()
+            current_section = m.group(1).strip().lower()
+            current_lines = []
+        elif current_section:
+            current_lines.append(line)
+        else:
+            prompt_lines.append(line)
+    if current_section:
+        sections[current_section] = "\n".join(current_lines).strip()
+    done_lines = []
+    if "done" in sections:
+        for line in sections["done"].splitlines():
+            line = line.strip().lstrip("- ")
+            m = re.match(r'`([^`]+)`', line)
+            if m:
+                done_lines.append(m.group(1))
+            elif line and re.match(r'(\w+)\(', line):
+                done_lines.append(line)
+            elif line == "never":
+                done_lines.append("never")
+    return {
+        "name": path.stem,
+        "tools": meta.get("tools", DEFAULT_TOOLS),
+        "status": meta.get("status", ""),
+        "handler": meta.get("handler", ""),
+        "author": meta.get("author", ""),
+        "parent": meta.get("parent", ""),
+        "previous": meta.get("previous", ""),
+        "stop_reason": meta.get("stop_reason", ""),
+        "done": done_lines,
+        "prompt": "\n".join(prompt_lines).strip(),
+        "sections": sections,
+        "_path": path,
+    }
+
+
+def load_tasks():
+    """Load all tasks from tasks/ directory, sorted by filename."""
+    if not TASKS_DIR.exists():
+        return []
+    return [t for f in sorted(TASKS_DIR.glob("*.md")) if (t := parse_task(f))]
+
+
+def update_task_meta(task, **kwargs):
+    """Update YAML frontmatter fields in a task file."""
+    path = task["_path"]
+    text = path.read_text()
+    _, fm, body = text.split("---", 2)
+    lines = fm.strip().splitlines()
+    existing = {}
+    for i, line in enumerate(lines):
+        key, _, _ = line.partition(":")
+        existing[key.strip()] = i
+    for key, val in kwargs.items():
+        if val is None:
+            continue
+        if key in existing:
+            lines[existing[key]] = f"{key}: {val}"
+        else:
+            lines.append(f"{key}: {val}")
+    path.write_text("---\n" + "\n".join(lines) + "\n---" + body)
+
+
+def next_id(directory):
+    """Return the next monotonic ID for a directory of NNNN-slug.md files."""
+    nums = [int(m.group(1)) for f in directory.glob("*.md")
+            if (m := re.match(r"^(\d+)-", f.name))]
+    return (max(nums) + 1) if nums else 1
+
+
+# --- completion checks ---
+
+def _glob_matches(base, pat):
+    if any(ch in pat for ch in "*?[]"):
+        return any(base.glob(pat))
+    return (base / pat).exists()
+
+
+def check_one_condition(cond, target_dir=None):
+    """Evaluate a single completion condition string."""
+    base = target_dir or ROOT
+    if not cond or cond == "never":
+        return False
+    m = re.match(r'(\w+)\((.+)\)$', cond)
+    if not m:
+        return False
+    func, raw_args = m.group(1), m.group(2)
+    try:
+        if not raw_args.strip():
+            args = []
+        else:
+            parsed = ast.literal_eval(f"({raw_args})")
+            args = [parsed] if isinstance(parsed, str) else list(parsed)
+    except (ValueError, SyntaxError):
+        return False
+    if func == "file_exists":
+        return _glob_matches(base, args[0])
+    elif func == "file_absent":
+        return not _glob_matches(base, args[0])
+    elif func == "file_contains":
+        p = base / args[0]
+        return p.exists() and args[1] in p.read_text()
+    elif func == "file_missing_text":
+        p = base / args[0]
+        return not p.exists() or args[1] not in p.read_text()
+    elif func == "command":
+        try:
+            subprocess.run(args[0], shell=True, cwd=base, check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+    return False
+
+
+def check_done(done, target_dir=None):
+    """Check if all completion conditions pass. No conditions = always done."""
+    if not done:
+        return True
+    return all(check_one_condition(c, target_dir) for c in done)
+
+
+def check_done_details(done, target_dir=None):
+    """Check conditions and return (passed, [(cond, bool), ...])."""
+    if not done:
+        return True, []
+    results = [(c, check_one_condition(c, target_dir)) for c in done]
+    return all(ok for _, ok in results), results
+
+
+def next_task(tasks=None):
+    """Find the next eligible task to run."""
+    if tasks is None:
+        tasks = load_tasks()
+    eligible = [t for t in tasks if t["status"] not in ("completed", "stopped")]
+    done_map = {t["_path"].name: True for t in tasks if t["status"] == "completed"}
+    done_map.update({t["_path"].name: (bool(t["done"]) and check_done(t["done"])) for t in eligible})
+    for t in eligible:
+        if done_map.get(t["_path"].name):
+            continue
+        prev = t.get("previous", "").removeprefix("tasks/")
+        if prev and not done_map.get(prev, False):
+            continue
+        return t
+    return None
+
+
+# --- project helpers ---
+
+def project_slug(project_path):
+    """Extract slug from projects/NNNN-slug.md -> slug."""
+    return re.sub(r"^\d+-", "", Path(project_path).stem)
+
+
+def project_branch_name(project_path):
+    return f"factory/{project_slug(project_path)}"
+
+
+def read_md(name):
+    """Read a markdown file from ROOT, or return empty string if missing."""
+    p = ROOT / name
+    return p.read_text() if p.exists() else ""
+LIBRARY
+cat > "$1/$PY_NAME" <<'RUNNER'
+#!/usr/bin/env python3
+import os, sys, re, signal, time, shutil, subprocess, json, threading, atexit
+from library import (
+    ROOT, TASKS_DIR, STATE_DIR, PARENT_REPO, DEFAULT_TOOLS,
+    parse_frontmatter, load_tasks, update_task_meta, next_id,
+    check_done, check_done_details, next_task,
+    project_slug, project_branch_name, read_md,
+    survey, triage,
+)
+
+AGENTS_DIR = ROOT / "agents"
+LOGS_DIR = ROOT / "logs"
 
 # --- config (written once at bootstrap) ---
 _config = None
@@ -60,30 +370,22 @@ def _load_config():
         _config = json.loads(p.read_text()) if p.exists() else {}
     return _config
 
-def _get_default_branch():
-    return _load_config().get("default_branch", "main")
-
-def project_slug(project_path):
-    """Extract slug from projects/NNNN-slug.md -> slug."""
-    name = Path(project_path).stem
-    return re.sub(r"^\d+-", "", name)
-
-def project_branch_name(project_path):
-    return f"factory/{project_slug(project_path)}"
-
-def _get_project_worktrees_dir():
-    val = _load_config().get("project_worktrees")
-    return Path(val) if val else ROOT / "worktrees"
-
-def project_worktree_dir(project_path):
-    return _get_project_worktrees_dir() / project_slug(project_path)
+def _provider_cli():
+    """Resolve provider binary from config. Returns (name, path) or None."""
+    name = _load_config().get("provider")
+    if name:
+        path = shutil.which(name)
+        if path:
+            return name, path
+    log("no provider CLI found (check config.json)")
+    return None
 
 def ensure_project_worktree(project_path):
     """Create project branch (off default branch) and worktree if needed."""
     slug = project_slug(project_path)
     branch = project_branch_name(project_path)
-    wt_dir = project_worktree_dir(project_path)
-    default_branch = _get_default_branch()
+    wt_dir = ROOT / "worktrees" / slug
+    default_branch = _load_config().get("default_branch", "main")
 
     def _git(*args):
         return subprocess.check_output(
@@ -101,7 +403,6 @@ def ensure_project_worktree(project_path):
 
     # create worktree if missing or stale
     if wt_dir.exists():
-        # check if git considers it valid
         try:
             wt_list = _git("worktree", "list", "--porcelain")
             if str(wt_dir.resolve()) not in wt_list:
@@ -117,20 +418,6 @@ def ensure_project_worktree(project_path):
         log(f"created worktree {slug} at {wt_dir}")
 
     return wt_dir
-
-def build_prologue():
-    """Build prologue instruction prepended to all task prompts."""
-    prologue_md = ROOT / "PROLOGUE.md"
-    if not prologue_md.exists():
-        return ""
-    return prologue_md.read_text()
-
-def build_epilogue(task, project_dir):
-    """Build epilogue instruction appended to project task prompts."""
-    epilogue_md = ROOT / "EPILOGUE.md"
-    if not epilogue_md.exists():
-        return ""
-    return epilogue_md.read_text().replace("{project_dir}", str(project_dir))
 
 _has_progress = False
 _run_log_file = None
@@ -188,39 +475,7 @@ signal.signal(signal.SIGINT, signal.SIG_DFL)
 signal.signal(signal.SIGTERM, _handle_signal)
 atexit.register(_cleanup_pid)
 
-# --- cached CLI lookup ---
-_cli_cache = None
-
-def get_agent_cli():
-    global _cli_cache
-    if _cli_cache is not None:
-        return _cli_cache
-    name = _load_config().get("provider")
-    if name:
-        path = shutil.which(name)
-        if path:
-            _cli_cache = (name, path)
-            return _cli_cache
-    log("no agent CLI found (check config.json)")
-    return None
-
 # --- helpers ---
-
-def _parse_frontmatter(text):
-    """Split text into (meta_dict, body_string) or None if invalid - key: value pairs only, not YAML."""
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return None
-    _, fm, body = parts
-    meta = {}
-    for line in fm.strip().splitlines():
-        key, _, val = line.partition(":")
-        if key.strip():
-            meta[key.strip()] = val.strip()
-    return meta, body
-
 
 def load_agent(name):
     """Load an agent definition from agents/{name}.md."""
@@ -228,7 +483,7 @@ def load_agent(name):
     if not path.exists():
         return None
     text = path.read_text()
-    parsed = _parse_frontmatter(text)
+    parsed = parse_frontmatter(text)
     if not parsed:
         return {"name": name, "prompt": text, "tools": DEFAULT_TOOLS}
     meta, body = parsed
@@ -239,94 +494,8 @@ def load_agent(name):
     }
 
 
-# --- task parsing ---
-
-def parse_task(path):
-    text = path.read_text()
-    parsed = _parse_frontmatter(text)
-    if not parsed:
-        log(f"skipping {path.name}: no/malformed frontmatter")
-        return None
-    meta, body = parsed
-    # parse sections from body
-    sections = {}
-    current_section = None
-    current_lines = []
-    prompt_lines = []
-    for line in body.split("\n"):
-        m = re.match(r'^##\s+(.+)$', line)
-        if m:
-            if current_section:
-                sections[current_section] = "\n".join(current_lines).strip()
-            current_section = m.group(1).strip().lower()
-            current_lines = []
-        elif current_section:
-            current_lines.append(line)
-        else:
-            prompt_lines.append(line)
-    if current_section:
-        sections[current_section] = "\n".join(current_lines).strip()
-    # extract done conditions from ## Done section
-    done_lines = []
-    if "done" in sections:
-        for line in sections["done"].splitlines():
-            line = line.strip().lstrip("- ")
-            m = re.match(r'`([^`]+)`', line)
-            if m:
-                done_lines.append(m.group(1))
-            elif line and re.match(r'(\w+)\(', line):
-                done_lines.append(line)
-            elif line == "never":
-                done_lines.append("never")
-    name = path.stem
-    return {
-        "name": name,
-        "tools": meta.get("tools", DEFAULT_TOOLS),
-        "status": meta.get("status", ""),
-        "handler": meta.get("handler", ""),
-        "author": meta.get("author", ""),
-        "parent": meta.get("parent", ""),
-        "previous": meta.get("previous", ""),
-        "done": done_lines,
-        "prompt": "\n".join(prompt_lines).strip(),
-        "sections": sections,
-        "_path": path,
-    }
-
-def load_tasks():
-    tasks = []
-    if TASKS_DIR.exists():
-        for f in sorted(TASKS_DIR.glob("*.md")):
-            t = parse_task(f)
-            if t:
-                tasks.append(t)
-    return tasks
-
-def update_task_meta(task, **kwargs):
-    path = task["_path"]
-    text = path.read_text()
-    _, fm, body = text.split("---", 2)
-    lines = fm.strip().splitlines()
-    existing = {}
-    for i, line in enumerate(lines):
-        key, _, _ = line.partition(":")
-        existing[key.strip()] = i
-    for key, val in kwargs.items():
-        if val is None:
-            continue
-        if key in existing:
-            lines[existing[key]] = f"{key}: {val}"
-        else:
-            lines.append(f"{key}: {val}")
-    path.write_text("---\n" + "\n".join(lines) + "\n---" + body)
-
-def _next_id(directory):
-    nums = [int(m.group(1)) for f in directory.glob("*.md")
-            if (m := re.match(r"^(\d+)-", f.name))]
-    return (max(nums) + 1) if nums else 1
-
 def _write_task(slug, body, handler=None, tools=None):
-    name = f"{str(_next_id(TASKS_DIR)).zfill(4)}-{slug}"
+    name = f"{str(next_id(TASKS_DIR)).zfill(4)}-{slug}"
     path = TASKS_DIR / f"{name}.md"
     fm = ["author: runner", f"tools: {tools or DEFAULT_TOOLS}", "status: backlog"]
     if handler:
@@ -336,184 +505,6 @@ def _write_task(slug, body, handler=None, tools=None):
     sh("git", "commit", "-m", f"New Task: {name}")
     return name
 
-def _plan_briefing(tasks):
-    """Build a rich task body for the planner from current factory state."""
-    sections = []
-
-    # --- Categorize ---
-    completed = [t for t in tasks if t["status"] == "completed"]
-    stopped = [t for t in tasks if t["status"] == "stopped"]
-    remaining = [t for t in tasks if t["status"] not in ("completed", "stopped")]
-
-    # --- Queue ---
-    lines = ["## Queue", ""]
-    for label, group in [("Completed", completed), ("Stopped", stopped), ("Remaining", remaining)]:
-        if group:
-            lines.append(f"**{label}**")
-            for t in group:
-                detail = ""
-                if t["parent"]:
-                    detail += f" (parent: {t['parent']})"
-                sr = t.get("sections", {}).get("stop_reason") or ""
-                if not sr:
-                    # check frontmatter stop_reason
-                    meta = _parse_frontmatter(t["_path"].read_text())
-                    if meta:
-                        sr = meta[0].get("stop_reason", "")
-                if sr:
-                    detail += f" [stop_reason: {sr}]"
-                lines.append(f"- {t['name']}{detail}")
-            lines.append("")
-    if not any([completed, stopped, remaining]):
-        lines.append("Empty queue — first planning cycle.")
-        lines.append("")
-    sections.append("\n".join(lines))
-
-    # --- Active initiatives ---
-    ini_dir = ROOT / "initiatives"
-    lines = ["## Active Initiatives", ""]
-    found = False
-    if ini_dir.exists():
-        for f in sorted(ini_dir.glob("*.md")):
-            parsed = _parse_frontmatter(f.read_text())
-            if parsed and parsed[0].get("status") == "active":
-                lines.append(f"### {f.stem}")
-                lines.append(f.read_text())
-                lines.append("")
-                found = True
-    if not found:
-        lines.append("None active.")
-        lines.append("")
-    sections.append("\n".join(lines))
-
-    # --- Active projects ---
-    prj_dir = ROOT / "projects"
-    lines = ["## Active Projects", ""]
-    found = False
-    if prj_dir.exists():
-        for f in sorted(prj_dir.glob("*.md")):
-            parsed = _parse_frontmatter(f.read_text())
-            if parsed and parsed[0].get("status") == "active":
-                lines.append(f"### {f.stem}")
-                lines.append(f.read_text())
-                lines.append("")
-                found = True
-    if not found:
-        lines.append("None active.")
-        lines.append("")
-    sections.append("\n".join(lines))
-
-    # --- Scarcity counts ---
-    ini_active = sum(1 for f in (ini_dir.glob("*.md") if ini_dir.exists() else [])
-                     if (p := _parse_frontmatter(f.read_text())) and p[0].get("status") == "active")
-    prj_active = sum(1 for f in (prj_dir.glob("*.md") if prj_dir.exists() else [])
-                     if (p := _parse_frontmatter(f.read_text())) and p[0].get("status") == "active")
-    task_active = sum(1 for t in tasks if t["status"] == "active")
-    task_active_unparented = sum(1 for t in tasks if t["status"] == "active" and not t["parent"])
-    sections.append("\n".join([
-        "## Scarcity", "",
-        f"- Initiatives: {ini_active} active (limit: 1)",
-        f"- Projects: {prj_active} active (limit: 2)",
-        f"- Tasks: {task_active} active (limit: 3)",
-        f"- Unparented tasks: {task_active_unparented} active (limit: 1)",
-        "",
-    ]))
-
-    # --- Format references ---
-    sections.append("\n".join([
-        "## Format References", "",
-        "- `specs/INITIATIVES.md` — initiative format",
-        "- `specs/PROJECTS.md` — project format",
-        "- `specs/TASKS.md` — task format",
-        "",
-    ]))
-
-    return "\n".join(sections)
-
-def _fix_briefing(task, details):
-    """Build a rich task body for the fixer from a failed task."""
-    task_content = task["_path"].read_text()
-    task_rel = task["_path"].relative_to(ROOT)
-    cond_report = "\n".join(
-        f"  {'✓' if ok else '✗'} {cond}" for cond, ok in (details or []))
-    body = f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
-    body += f"## Condition Results\n\n{cond_report}\n\n"
-    rlp = STATE_DIR / "last_run.jsonl"
-    if rlp.exists():
-        run_log_tail = "\n".join(rlp.read_text().splitlines()[-50:])
-        if run_log_tail:
-            body += f"## Run Log (last 50 lines)\n\n```\n{run_log_tail}\n```\n"
-    return body
-
-# --- completion checks ---
-
-def _glob_matches(base, pat):
-    if any(ch in pat for ch in "*?[]"):
-        return any(base.glob(pat))
-    return (base / pat).exists()
-
-def check_one_condition(cond, target_dir=None):
-    base = target_dir or ROOT
-    if not cond or cond == "never":
-        return False
-    m = re.match(r'(\w+)\((.+)\)$', cond)
-    if not m:
-        log(f"unknown condition: {cond}")
-        return False
-    func, raw_args = m.group(1), m.group(2)
-    try:
-        if not raw_args.strip():
-            args = []
-        else:
-            parsed = ast.literal_eval(f"({raw_args})")
-            args = [parsed] if isinstance(parsed, str) else list(parsed)
-    except (ValueError, SyntaxError):
-        log(f"check parse error: {cond}")
-        return False
-    if func == "file_exists":
-        return _glob_matches(base, args[0])
-    elif func == "file_absent":
-        return not _glob_matches(base, args[0])
-    elif func == "file_contains":
-        p = base / args[0]
-        return p.exists() and args[1] in p.read_text()
-    elif func == "file_missing_text":
-        p = base / args[0]
-        return not p.exists() or args[1] not in p.read_text()
-    elif func == "command":
-        try:
-            subprocess.run(args[0], shell=True, cwd=base, check=True, capture_output=True)
-            return True
-        except subprocess.CalledProcessError:
-            return False
-    log(f"unknown check: {func}")
-    return False
-
-def check_done(done, target_dir=None):
-    if not done:  # no conditions = always done
-        return True
-    return all(check_one_condition(c, target_dir) for c in done)
-
-def check_done_details(done, target_dir=None):
-    if not done:  # no conditions = always done
-        return True, []
-    results = [(c, check_one_condition(c, target_dir)) for c in done]
-    return all(ok for _, ok in results), results
-
-def next_task():
-    tasks = load_tasks()
-    # skip tasks that are terminal — completed/stopped live in git history
-    eligible = [t for t in tasks if t["status"] not in ("completed", "stopped")]
-    done_map = {t["_path"].name: True for t in tasks if t["status"] == "completed"}
-    done_map.update({t["_path"].name: (bool(t["done"]) and check_done(t["done"])) for t in eligible})
-    for t in eligible:
-        if done_map.get(t["_path"].name):
-            continue
-        prev = t.get("previous", "").removeprefix("tasks/")
-        if prev and not done_map.get(prev, False):
-            continue
-        return t
-    return None
 
 # --- agent runner ---
 
@@ -797,8 +788,8 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         return False, result
 
 
-def format_result(result):
-    """Format a result event dict into a short string like '(130.2s, $0.43, $10.32/hr)'."""
+def _format_result(result):
+    """Format result with $/hr rate (needs runner state)."""
     if not result:
         return ""
     parts = []
@@ -815,7 +806,7 @@ def format_result(result):
     return f"({', '.join(parts)})" if parts else ""
 
 def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log=None):
-    cli = get_agent_cli()
+    cli = _provider_cli()
     if not cli:
         return False, None
     cli_name, cli_path = cli
@@ -826,7 +817,7 @@ def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log
 # --- main loop ---
 
 def run():
-    cli = get_agent_cli()
+    cli = _provider_cli()
     if not cli:
         return
 
@@ -842,12 +833,7 @@ def run():
     atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
 
     def commit_task(task, message, scoop=False, work_dir=None):
-        """Commit task metadata on the factory branch.
-
-        scoop=True:  best-effort stage any uncommitted agent work.
-        work_dir:    project worktree (if set, only the task file is committed
-                     on the factory branch, not the project worktree).
-        """
+        """Commit task metadata on the factory branch."""
         if scoop and (work_dir is None or work_dir == ROOT):
             try:
                 status = sh("git", "status", "--porcelain")
@@ -875,7 +861,7 @@ def run():
                    for t in all_tasks):
                 log("stopping — tasks exist but are blocked on dependencies")
                 return
-            _write_task("plan", _plan_briefing(all_tasks),
+            _write_task("plan", survey(all_tasks),
                         handler="planner",
                         tools="Read,Write,Edit,Glob,Grep,Bash")
             just_planned = True
@@ -885,17 +871,13 @@ def run():
         name = task["name"]
         log(f"\033[32mtask\033[0m started: {name}")
 
-        # determine work directory: project worktree or factory worktree
         is_project_task = task["parent"].startswith("projects/")
-        if is_project_task:
-            work_dir = ensure_project_worktree(task["parent"])
-        else:
-            work_dir = ROOT
+        work_dir = ensure_project_worktree(task["parent"]) if is_project_task else ROOT
 
         update_task_meta(task, status="active", pid=str(os.getpid()))
         commit_task(task, f"Start Task: {name}")
         # build prompt: prologue + body + context + verify + acceptance + epilogue
-        prologue = build_prologue()
+        prologue = read_md("PROLOGUE.md")
         parts = [prologue, task["prompt"]] if prologue else [task["prompt"]]
         for key in ("context", "verify"):
             if key in task["sections"]:
@@ -904,7 +886,7 @@ def run():
             checklist = "\n".join(f"- `{c}`" for c in task["done"])
             parts.append(f"## Acceptance Criteria\n\nYour work is verified by these exact conditions — file paths and names must match precisely:\n\n{checklist}")
         if is_project_task:
-            parts.append(build_epilogue(task, work_dir))
+            parts.append(read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)))
         prompt = "\n\n".join(parts)
 
         # Load agent if specified
@@ -946,7 +928,7 @@ def run():
                     pass
             update_task_meta(task, status="stopped", stop_reason="failed", duration=duration, cost=cost)
             commit_task(task, f"Failed Task: {name}")
-            info = format_result(result)
+            info = _format_result(result)
             log(f"  ✗ task \033[31mcrashed\033[0m \033[2m{info}\033[0m" if info else "  ✗ task \033[31mcrashed\033[0m")
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             log("")
@@ -975,7 +957,7 @@ def run():
             update_task_meta(task, **meta, duration=duration, cost=cost)
             cwd = work_dir if is_project_task else None
             commit_task(task, f"{label} Task: {name}", scoop=True, work_dir=cwd)
-            info = format_result(result)
+            info = _format_result(result)
             if passed:
                 log(f"  ✓ conditions: \033[32mpassed\033[0m \033[2m{info}\033[0m" if info else "  ✓ all conditions \033[32mpassed\033[0m")
             else:
@@ -995,7 +977,7 @@ def run():
 
         # write fixer task on incomplete (not for planner/fixer tasks)
         if not passed and task.get("handler") not in ("planner", "fixer"):
-            _write_task("fix", _fix_briefing(task, details),
+            _write_task("fix", triage(task, details),
                         handler="fixer",
                         tools="Read,Write,Edit,Glob,Grep,Bash")
 
