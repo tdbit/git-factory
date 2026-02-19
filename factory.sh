@@ -187,6 +187,7 @@ def parse_task(path):
         "author": meta.get("author", ""),
         "parent": meta.get("parent", ""),
         "previous": meta.get("previous", ""),
+        "successor": meta.get("successor", ""),
         "stop_reason": meta.get("stop_reason", ""),
         "done": done_lines,
         "prompt": body.strip(),
@@ -294,6 +295,7 @@ def next_task(tasks=None):
     eligible = [t for t in tasks if t["status"] not in ("completed", "stopped")]
     done_map = {t["_path"].name: True for t in tasks if t["status"] == "completed"}
     done_map.update({t["_path"].name: (bool(t["done"]) and check_done(t["done"])) for t in eligible})
+    task_map = {t["_path"].name: t for t in tasks}
     for t in eligible:
         if done_map.get(t["_path"].name):
             continue
@@ -302,6 +304,11 @@ def next_task(tasks=None):
             prev += ".md"
         if prev and not done_map.get(prev, False):
             continue
+        # resolve successor routing: if previous task named a successor, use it as handler
+        if prev and (prev_task := task_map.get(prev)):
+            if successor := prev_task.get("successor", ""):
+                t = dict(t, handler=successor)
+                update_task_meta(t, handler=successor)
         return t
     return None
 
@@ -471,12 +478,14 @@ def load_agent(name):
     }
 
 
-def _write_task(slug, body, handler=None, tools=None):
+def write_task(slug, body, handler=None, tools=None, successor=None):
     name = f"{str(next_id(TASKS_DIR)).zfill(4)}-{slug}"
     path = TASKS_DIR / f"{name}.md"
     fm = ["author: runner", f"tools: {tools or DEFAULT_TOOLS}", "status: backlog"]
     if handler:
         fm.append(f"handler: {handler}")
+    if successor:
+        fm.append(f"successor: {successor}")
     path.write_text("---\n" + "\n".join(fm) + "\n---\n\n" + body)
     sh("git", "add", str(path.relative_to(ROOT)))
     sh("git", "commit", "-m", f"New Task: {name}")
@@ -828,27 +837,21 @@ def run():
     def git_head(cwd):
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cwd, stderr=subprocess.STDOUT).decode().strip()
 
-    just_planned = False
     while True:
         task = next_task()
         if task is None:
-            if just_planned:
-                log("stopping — no tasks after planning")
-                return
             all_tasks = load_tasks()
             if any(t["status"] not in ("completed", "stopped")
                    and not (bool(t["done"]) and check_done(t["done"]))
                    for t in all_tasks):
-                log("stopping — tasks exist but are blocked on dependencies")
+                log(f"\033[33m⚙ factory\033[0m shutting down")
+                log(f"  ✗ \033[31mtasks exist but are blocked on dependencies\033[0m")
                 return
             prompt, level = assess(all_tasks)
-            _write_task(f"plan-{level}", prompt,
+            write_task(f"plan-{level}", prompt,
                         handler="planner",
                         tools="Read,Write,Edit,Glob,Grep,Bash")
-            just_planned = True
             continue
-        if task.get("handler") != "planner":
-            just_planned = False
         name = task["name"]
         log(f"\033[32mtask\033[0m started: {name}")
 
@@ -950,11 +953,13 @@ def run():
             log(f"    {line}")
         log("")
 
-        # write fixer task on incomplete (not for planner/fixer tasks)
-        if not passed and task.get("handler") not in ("planner", "fixer"):
-            _write_task("fix", triage(task, details),
-                        handler="fixer",
-                        tools="Read,Write,Edit,Glob,Grep,Bash")
+        # write understand task on incomplete (not for planner/fixer/understand tasks)
+        # successor=fixer routes the understand output to fixer automatically
+        if not passed and task.get("handler") not in ("planner", "fixer", "understand"):
+            write_task("understand-failure", triage(task, details),
+                       handler="understand",
+                       successor="fixer",
+                       tools="Read,Glob,Grep,Write")
 
 if __name__ == "__main__":
     run()
@@ -972,6 +977,8 @@ Source repo: \`$SOURCE_DIR\`
 Factory repo: \`$FACTORY_DIR\`
 
 All file paths in factory metadata (task conditions, references, etc.) are relative to the factory root (\`.factory/\`). Never prefix paths with \`.factory/\` — you are already inside it.
+
+If your task has a \`## Done\` section, those are machine-evaluated conditions the runner checks after you finish. File paths and names must match precisely. Available conditions: \`file_exists("path")\`, \`file_absent("path")\`, \`file_contains("path", "text")\`, \`file_missing_text("path", "text")\`, \`command("cmd")\` (exit 0), \`never\` (recurring task).
 PROLOGUE
 }
 
@@ -1441,15 +1448,12 @@ For each question: investigate first, then state what you found. Use whatever me
 
 When all four questions are answered, create a task file in `tasks/`. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-[slug]-understanding.md`.
 
-Read the `author` field from **your own task's** frontmatter. That value is the agent that invoked you. The follow-on task's `handler` **MUST** be set to that value — not to `understand`, not to your own name.
-
-Example: if your task has `author: planner`, the follow-on task gets `handler: planner`.
+The runner will route this task to the correct handler automatically. You do not need to set `handler`.
 
 Frontmatter:
 ```
 ---
 author: understand
-handler: {author from YOUR task's frontmatter}
 previous: {your task's filename, e.g. tasks/0002-understand.md}
 status: backlog
 ---
@@ -1510,6 +1514,7 @@ The understand task must contain **only a scope** — what entity to examine. Do
 ---
 author: planner
 handler: understand
+successor: planner
 tools: Read,Glob,Grep,Write
 status: backlog
 ---
