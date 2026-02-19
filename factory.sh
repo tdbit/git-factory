@@ -361,7 +361,8 @@ def _provider_cli():
         path = shutil.which(name)
         if path:
             return name, path
-    log("no provider CLI found (check config.json)")
+    log(f"\033[33m⚙ factory\033[0m shutting down")
+    log(f"  ✗ \033[31mno provider CLI found (check config.json)\033[0m")
     return None
 
 def ensure_project_worktree(project_path):
@@ -383,7 +384,7 @@ def ensure_project_worktree(project_path):
         _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
     except subprocess.CalledProcessError:
         _git("branch", branch, default_branch)
-        log(f"created branch {branch} off {default_branch}")
+        log(f"\033[33m⚙ factory\033[0m created branch\n  → branch: \033[2m{branch}\033[0m\n  → base: \033[2m{default_branch}\033[0m\n")
 
     # create worktree if missing or stale
     if wt_dir.exists():
@@ -393,13 +394,13 @@ def ensure_project_worktree(project_path):
                 _git("worktree", "remove", "--force", str(wt_dir))
                 wt_dir.mkdir(parents=True, exist_ok=True)
                 _git("worktree", "add", str(wt_dir), branch)
-                log(f"re-created stale worktree {slug}")
+                log(f"\033[33m⚙ factory\033[0m re-created stale worktree {slug}")
         except subprocess.CalledProcessError:
             pass
     else:
         wt_dir.parent.mkdir(parents=True, exist_ok=True)
         _git("worktree", "add", str(wt_dir), branch)
-        log(f"created worktree {slug} at {wt_dir}")
+        log(f"\033[33m⚙ factory\033[0m created worktree {slug} at {wt_dir}")
 
     return wt_dir
 
@@ -436,7 +437,8 @@ def _acquire_pid():
         try:
             old_pid = int(pid_file.read_text().strip())
             os.kill(old_pid, 0)
-            log(f"another instance is running (pid {old_pid})")
+            log(f"\033[33m⚙ factory\033[0m shutting down")
+            log(f"  ✗ \033[31manother instance is running (pid {old_pid})\033[0m")
             return False
         except (ValueError, ProcessLookupError, PermissionError):
             pass  # stale pid file, safe to overwrite
@@ -452,7 +454,8 @@ def _cleanup_pid():
 
 def _handle_signal(signum, frame):
     _cleanup_pid()
-    log(f"received signal {signum}, exiting")
+    log(f"\033[33m⚙ factory\033[0m shutting down")
+    log(f"  ✗ \033[31mreceived signal {signum}, exiting\033[0m")
     raise SystemExit(128 + signum)
 
 signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -532,7 +535,8 @@ def _build_prompt(prompt, allowed_tools, agent):
 def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which("codex")
     if not cli_path:
-        log("codex CLI not found on PATH")
+        log(f"\033[33m⚙ factory\033[0m shutting down")
+        log(f"  ✗ \033[31mcodex CLI not found on PATH\033[0m")
         return False, None
     work_dir = cwd or ROOT
 
@@ -818,7 +822,7 @@ def run():
     _run_log_file = open(log_path, "w")
     atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
 
-    log(f"\n\033[33m⚙ factory\033[0m starting up")
+    log(f"\033[H\033[2J\n\033[33m⚙ factory\033[0m starting up")
     log(f"  → repo: \033[2m{PARENT_REPO}\033[0m\n  → logs: \033[2m{log_path}\033[0m\n  → tasks: \033[2m{TASKS_DIR} ({len(load_tasks())})\033[0m \n")
 
     def commit_task(task, message, scoop=False, work_dir=None):
