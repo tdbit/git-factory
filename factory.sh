@@ -90,19 +90,11 @@ def _active_items(dirname, heading):
     return "\n".join(lines), count
 
 
-# scarcity limits
-LIMITS = {"initiatives": 1, "projects": 2, "tasks": 3, "unparented_tasks": 1}
-
-
-def survey(tasks):
-    """Scan queue, initiatives, projects, scarcity for the planner."""
-    sections = []
-
-    # --- Queue ---
+def _summarize_queue(tasks):
+    """Build a markdown summary of the task queue."""
     completed = [t for t in tasks if t["status"] == "completed"]
     stopped = [t for t in tasks if t["status"] == "stopped"]
     remaining = [t for t in tasks if t["status"] not in ("completed", "stopped")]
-
     lines = ["## Queue", ""]
     if not any([completed, stopped, remaining]):
         lines.append("Empty queue — first planning cycle.")
@@ -119,35 +111,29 @@ def survey(tasks):
             lines.append("**Remaining**")
             lines.extend(_task_line(t) for t in remaining)
             lines.append("")
-    sections.append("\n".join(lines))
+    return "\n".join(lines)
 
-    # --- Active initiatives and projects ---
+
+def assess(tasks):
+    """Build a level-specific planning prompt. Returns (prompt, level)."""
     ini_section, ini_active = _active_items("initiatives", "Active Initiatives")
     prj_section, prj_active = _active_items("projects", "Active Projects")
-    sections.append(ini_section)
-    sections.append(prj_section)
+    queue = _summarize_queue(tasks)
 
-    # --- Scarcity ---
-    task_active = sum(1 for t in tasks if t["status"] == "active")
-    unparented = sum(1 for t in tasks if t["status"] == "active" and not t["parent"])
-    counts = {"initiatives": ini_active, "projects": prj_active,
-              "tasks": task_active, "unparented_tasks": unparented}
-    lines = ["## Scarcity", ""]
-    for key, limit in LIMITS.items():
-        lines.append(f"- {key.replace('_', ' ').title()}: {counts[key]} active (limit: {limit})")
-    lines.append("")
-    sections.append("\n".join(lines))
+    if ini_active == 0:
+        level = "initiative"
+        spec = "specs/INITIATIVES.md"
+        prompt = f"{queue}\n{ini_section}\n\nRead `{spec}`. Create an initiative.\n"
+    elif prj_active == 0:
+        level = "project"
+        spec = "specs/PROJECTS.md"
+        prompt = f"{queue}\n{ini_section}\n\nRead `{spec}`. Decompose the active initiative into projects.\n"
+    else:
+        level = "task"
+        spec = "specs/TASKS.md"
+        prompt = f"{queue}\n{prj_section}\n\nRead `{spec}`. Create tasks for the active project.\n"
 
-    # --- Format references ---
-    sections.append("\n".join([
-        "## Format References", "",
-        "- `specs/INITIATIVES.md` — initiative format",
-        "- `specs/PROJECTS.md` — project format",
-        "- `specs/TASKS.md` — task format",
-        "",
-    ]))
-
-    return "\n".join(sections)
+    return prompt, level
 
 
 def triage(task, details):
@@ -353,7 +339,7 @@ from library import (
     parse_frontmatter, load_tasks, update_task_meta, next_id,
     check_done, check_done_details, next_task,
     project_slug, project_branch_name, read_md,
-    survey, triage,
+    assess, triage,
 )
 
 AGENTS_DIR = ROOT / "agents"
@@ -833,10 +819,8 @@ def run():
     atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
 
     noise = random.choice(NOISES)
-    repo = PARENT_REPO.name
-    n = len(load_tasks())
-    log(f"\033[33m⚙  {noise}… factory is starting up\033[0m")
-    log(f"   repo: {repo}  ·  tasks: {n}  ·  provider: {cli[0]}\n\033[2mlogs: {log_path}\033[0m\n")
+    log(f"\n\033[33m⚙{noise}… \033[1m{PARENT_REPO.name}\033[22m factory is starting up\033[0m")
+    log(f"provider: {cli[0]}\033[0m  ·  tasks: \033[2m {len(load_tasks())}  ·  logs: {log_path.relative_to(ROOT)}\033[0m")
 
     def commit_task(task, message, scoop=False, work_dir=None):
         """Commit task metadata on the factory branch."""
@@ -867,7 +851,8 @@ def run():
                    for t in all_tasks):
                 log("stopping — tasks exist but are blocked on dependencies")
                 return
-            _write_task("plan", survey(all_tasks),
+            prompt, level = assess(all_tasks)
+            _write_task(f"plan-{level}", prompt,
                         handler="planner",
                         tools="Read,Write,Edit,Glob,Grep,Bash")
             just_planned = True
@@ -1425,17 +1410,17 @@ You understand things. You are given an entity and a question about it.
 
 - Read files, directories, and source code
 - Search for patterns across a codebase (Glob, Grep)
-- Create a follow-on planner task containing your findings
+- Create a follow-on tasks containing your findings
 
 ## Method
 
-Answer all three questions about the entity you are examining, in order:
+Answer all four questions about the entity you are examining, in order:
 
-### 1. What defines this thing? → Principles
+### 1. What defines this thing? → Properties
 
 The Formal cause. What makes this entity what it is and not something else. Its defining characteristics, qualities, properties, cross-cutting conventions. These aren't parts — they're properties the entity has that span its constituents.
 
-Principles come before parts because parts are not always legible on their own. The raw composition of a thing may not reveal its real structure — what you see may reflect the medium, the era, or the toolchain more than the thing itself. You must understand the principles before the parts become meaningful.
+Properties come before parts because parts are not always legible on their own. The raw composition of a thing may not reveal its real structure — what you see may reflect the medium, the era, or the toolchain more than the thing itself. You must understand the properties before the parts become meaningful.
 
 ### 2. What is it made of? → Parts
 
@@ -1458,11 +1443,19 @@ Purpose includes **measures** — how you'd observe purpose being fulfilled *bet
 - Prefer marginal measures over binary ones. Purpose is not pass/fail — it is fulfilled to a degree. "Tests pass" is binary. "Time from change to confident deploy" is marginal — it tells you whether you're getting better. "Error messages exist" is binary. "Percentage of errors that tell the user what to do next" is marginal.
 - Measures are the observable face of purpose. "The purpose of X is to…" is incomplete without "…and you'd know it's succeeding *more* when…"
 
+### 4. What produces this thing? → Provenance
+
+The Efficient cause. What processes, pipelines, workflows, or activities bring this entity into being and keep it current. Not what it's made of (Parts) but what *makes* it — the build system, the deploy pipeline, the migration tool, the human workflow, the CI job.
+
+For a codebase: how does code get written, tested, built, and shipped? What generates artifacts? What enforces quality? What gates exist between a change and production?
+
+Provenance tells the caller what processes a task must work *within*. If you don't know how things get built and shipped, you can't write tasks that fit the actual development process.
+
 For each question: investigate first, then state what you found. Use whatever means are available — read files, search patterns, trace dependencies. Stop investigating when you can answer the question concretely, or when you've determined you can't.
 
-### 4. Create planner task
+### 5. Create follow-on task
 
-When all three questions are answered, create a task file in `tasks/`. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-[task-author]-understanding.md`.  The [task-author] **MUST** be the author of your task prompt.
+When all four questions are answered, create a task file in `tasks/`. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-[task-author]-understanding.md`.  The [task-author] **MUST** be the author of your task prompt.
 
 Frontmatter:
 ```
@@ -1474,33 +1467,35 @@ status: backlog
 ---
 ```
 
-Body: `## Understanding: {scope}` with subsections for **Principles**, **Parts**, and **Purpose** (including Measures). This is the planner's sole context for creating work. If you did not produce all three, the planner cannot plan.
+Body: `## Understanding: {scope}` with subsections for **Properties**, **Parts**, **Purpose** (including Measures), and **Provenance**. This is the caller's context for its next action. If you did not produce all four, the caller cannot proceed.
 
 **This is your only output.** Do not write to any other file. Do not modify your own task file.
 
 ## Halt Condition
 
-If you cannot answer the question concretely — with references to specific things you examined — note the blockage in the planner task body: what you examined, what was ambiguous, and what questions need a human answer. The planner can then decide what to do.
+If you cannot answer the question concretely — with references to specific things you examined — note the blockage in the follow-on task body: what you examined, what was ambiguous, and what questions need a human answer. The planner can then decide what to do.
 
 Specific signals that you're stuck:
 
-- **Principles:** You can't identify any characteristic that distinguishes this entity from other things in its category.
+- **Properties:** You can't identify any characteristic that distinguishes this entity from other things in its category.
 - **Parts:** You can't tell what's essential vs incidental — the structure is too opaque to decompose meaningfully.
 - **Purpose:** You can't answer at least three of: What becomes true when this succeeds? Who or what benefits? What capability becomes possible? What breaks if it's gone?
+- **Provenance:** You can't identify any process that produces or maintains this entity — no build, no pipeline, no workflow, no human routine.
 
 ## Validation
 
-- Does every purpose statement describe an end, not a mechanism? Apply the "to what end?" test — if the answer is meaningful, you haven't reached purpose.
+- For properties: do they span the parts, or are they local to one component? A property that only applies to one part is a property of that part, not a property of the whole.
+- For purpose: does every purpose statement describe an end, not a mechanism? Apply the "to what end?" test — if the answer is meaningful, you haven't reached purpose.
 - For parts: did you distinguish essential from incidental? Could you justify the classification?
-- For principles: do they span the parts, or are they local to one component? A principle that only applies to one part is a property of that part, not a principle of the whole.
-- Could the statement apply to any entity unchanged? If so, too generic. Cut it.
+- For provenance: did you identify the actual processes, not just the tools? "Uses GitHub Actions" is a tool. "PRs trigger lint, test, build; merge to main triggers deploy" is provenance.
+
 - Does every measure track degree, not just pass/fail?
 - Does every measure include a method of observation?
 
 ## Rules
 
 - No mission statements. No platitudes. No abstraction untethered from the entity.
-- Principles before parts. Understand what kind of thing it is before cataloging what it's made of.
+- Properties before parts. Understand what kind of thing it is before cataloging what it's made of.
 - Essential before incidental. Understand what the entity *is* before what it *happens to be built with*.
 - Prefer evidence to inference. Name the thing, not the category.
 - Stop when done. Don't generate understanding you can't ground.
@@ -1513,24 +1508,15 @@ author: factory
 
 # PLANNER
 
-You plan work. You are invoked when no ready task exists.
-
-## Capabilities
-
-- Read specs in .factory/specs folder  format requirements
-- Read, write and edit work items in .factory/[initiatives|projects|tasks] folder to understand the factory state
-- Read files in the source repo to examine the current source repo state
-- Update frontmatter status on existing items
+You plan work at one level. Your task body tells you what to create (an initiative, projects, or tasks) and which spec to read.
 
 You do not commit. The runner commits your work.
 
 ## Method
 
-Your task body contains the current queue, active initiatives and projects, scarcity counts, and format references. It may also contain an Understanding section from a prior understand task.
+**Before anything else:** If your task body does not contain `## Understanding`, create a `handler: understand` task in `tasks/` and stop. Do not read specs, do not explore, do not proceed. You cannot plan without understanding.
 
-**Before anything else:** If your task body does not contain `## Understanding`, create a `handler: understand` task in `tasks/` and stop. Do not read specs, do not explore, do not proceed to the steps below. You cannot plan without understanding.
-
-The understand task must contain **only a scope** — what entity to examine (e.g., "the source repo at /path/to/repo" or "the authentication subsystem"). Do not write a method, investigation checklist, focus areas, or Done conditions. The understand agent has its own method and auto-completes. Example:
+The understand task must contain **only a scope** — what entity to examine. Do not write a method, investigation checklist, or Done conditions. Example:
 
 ```
 ---
@@ -1545,56 +1531,34 @@ Examine the source repo at {path}.
 
 ### 1. Assess
 
-For each active item: is it still the highest-leverage work available? Is it making progress, or stuck? Has completed work changed what's most important?
-
-Mark stale or superseded items `stopped` with `stop_reason: superseded`.
+Review existing items at this level. Mark stale or superseded items `stopped` with `stop_reason: superseded`. Cascade completions upward (all tasks done → project completed, all projects done → initiative completed).
 
 If any task has `stop_reason: failed` or was marked incomplete, follow `agents/FIXER.md` before proceeding.
 
-### 2. Complete
+### 2. Create
 
-Cascade finished work upward: all tasks under a project completed → mark the project `completed`. All projects under an initiative completed → mark the initiative `completed`.
+Read the spec file named in your task body. Create items at the level you were told:
 
-### 3. Fill
+- **Initiative** — identify the highest-leverage gap between current state and purpose. Write the Problem section from evidence — run commands, read files, find concrete problems. Create 1–3 backlog initiatives. Activate exactly one.
+- **Project** — decompose the active initiative into independent, shippable slices. Create as many as needed. Activate 1–2.
+- **Task** — each task produces one deliverable or a clear fraction of one. Create all tasks needed for the active project. Activate exactly one.
 
-Work top-down. Only create what is missing.
+### 3. Validate
 
-**Initiatives** — If none active: identify the highest-leverage gap between current state and purpose. Write the Problem section from evidence — run commands, read files, find concrete problems. Create 1–3 backlog initiatives. Activate exactly one.
-
-**Projects** — If the active initiative has no active project: decompose into independent, shippable slices. Create as many as the initiative needs. Activate 1–2.
-
-**Tasks** — If the active project has no ready tasks: each task produces one deliverable or a clear fraction of one. Create all tasks needed. Activate exactly one.
-
-Read the spec files listed in Format References for field requirements and naming conventions.
-
-### 4. Validate
-
-Confirm scarcity invariants hold and at least one task is ready to run (active, unblocked, conditions unmet). If not, investigate and fix.
+Confirm at least one item is ready to run at the level you created. If not, investigate and fix.
 
 ## Halt Condition
 
-If you lack understanding of the source repo, create a `handler: understand` task scoped to what you need and stop. Do not plan without understanding.
-
-## Validation
-
-For every item you create or activate:
-
-- Can you trace it to the purpose described in your understanding?
-- Does it have concrete, testable success criteria?
-- Is it the highest-leverage thing at its level?
-- Would a senior engineer's review of the problem statement, deliverables, and acceptance criteria hold up?
-
-For the plan as a whole: did you work top-down, or skip levels?
+If you lack understanding, create a `handler: understand` task scoped to what you need and stop.
 
 ## Rules
 
-- Every initiative traces to purpose. Every project traces to a known constituent. Every task delivers a project artifact. No understanding, no work.
+- Every initiative traces to purpose. Every project traces to an initiative. Every task delivers a project artifact.
 - No vague initiatives. Name the specific gap, with evidence.
 - No aspirational deliverables. Name concrete artifacts.
 - No untestable acceptance. Criteria must map to automatable Done conditions.
-- No busywork tasks. Every task must advance a project deliverable.
-- No over-planning. Plan enough to maintain flow, not to predict the future.
-- No copy-paste structure. Each initiative addresses a different problem.
+- No busywork. Every item must advance its parent.
+- No over-planning. Plan enough to maintain flow.
 PLANNER
 cat > "$1/FIXER.md" <<'FIXER'
 ---
@@ -1610,7 +1574,7 @@ You diagnose failures and fix the system that produced them.
 
 - Read task files, run logs, and git diffs of agent output
 - Read all factory-internal files: factory.py, agent definitions, format specs, PROLOGUE.md
-- Read completed understand tasks in \`tasks/\` for the source repo's Principles, Parts, Purpose, and Measures
+- Read completed understand tasks in \`tasks/\` for the source repo's Properties, Parts, Purpose, Provenance, and Measures
 - Run commands to examine state
 - Write and edit factory-internal files
 - Create new task files
@@ -1756,7 +1720,7 @@ write_files() {
     mkdir -p "$dir/$d"
   done
   cp "$0" "$dir/factory.sh"
-  printf '%s\n' state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$dir/.gitignore"
+  printf '%s\n' __pycache__/ state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$dir/.gitignore"
   printf '{\n"default_branch": "%s",\n"project_worktrees": "%s",\n"provider": "%s"\n}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
   write_python "$dir"
   write_prologue_md "$dir"
