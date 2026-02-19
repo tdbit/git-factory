@@ -155,39 +155,29 @@ def triage(task, details):
 # --- task parsing ---
 
 def parse_task(path):
-    """Parse a task markdown file into a dict, or None if malformed."""
+    """Parse a task markdown file into a dict with frontmatter fields, completion conditions from ## Done, and the body as prompt.
+    Returns None if frontmatter is missing or malformed."""
     text = path.read_text()
     parsed = parse_frontmatter(text)
     if not parsed:
         return None
     meta, body = parsed
-    sections = {}
-    current_section = None
-    current_lines = []
-    prompt_lines = []
-    for line in body.split("\n"):
-        m = re.match(r'^##\s+(.+)$', line)
-        if m:
-            if current_section:
-                sections[current_section] = "\n".join(current_lines).strip()
-            current_section = m.group(1).strip().lower()
-            current_lines = []
-        elif current_section:
-            current_lines.append(line)
-        else:
-            prompt_lines.append(line)
-    if current_section:
-        sections[current_section] = "\n".join(current_lines).strip()
     done_lines = []
-    if "done" in sections:
-        for line in sections["done"].splitlines():
-            line = line.strip().lstrip("- ")
-            m = re.match(r'`([^`]+)`', line)
+    in_done = False
+    for line in body.split("\n"):
+        if re.match(r'^##\s+[Dd]one\s*$', line):
+            in_done = True
+            continue
+        if in_done and re.match(r'^##\s+', line):
+            in_done = False
+        if in_done:
+            stripped = line.strip().lstrip("- ")
+            m = re.match(r'`([^`]+)`', stripped)
             if m:
                 done_lines.append(m.group(1))
-            elif line and re.match(r'(\w+)\(', line):
-                done_lines.append(line)
-            elif line == "never":
+            elif stripped and re.match(r'(\w+)\(', stripped):
+                done_lines.append(stripped)
+            elif stripped == "never":
                 done_lines.append("never")
     return {
         "name": path.stem,
@@ -199,8 +189,7 @@ def parse_task(path):
         "previous": meta.get("previous", ""),
         "stop_reason": meta.get("stop_reason", ""),
         "done": done_lines,
-        "prompt": "\n".join(prompt_lines).strip(),
-        "sections": sections,
+        "prompt": body.strip(),
         "_path": path,
     }
 
@@ -820,9 +809,8 @@ def run():
     _run_log_file = open(log_path, "w")
     atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
 
-    noise = random.choice(NOISES)
-    log(f"\n\033[33m⚙{noise}… \033[1m{PARENT_REPO.name}\033[22m factory is starting up\033[0m")
-    log(f"provider: {cli[0]}\033[0m  ·  tasks: \033[2m {len(load_tasks())}  ·  logs: {log_path.relative_to(ROOT)}\033[0m")
+    log(f"\n\033[33m⚙ factory\033[0m starting up")
+    log(f"  → repo: \033[2m{PARENT_REPO}\033[0m\n  → logs: \033[2m{log_path}\033[0m\n  → tasks: \033[2m{TASKS_DIR} ({len(load_tasks())})\033[0m \n")
 
     def commit_task(task, message, scoop=False, work_dir=None):
         """Commit task metadata on the factory branch."""
@@ -869,18 +857,12 @@ def run():
 
         update_task_meta(task, status="active", pid=str(os.getpid()))
         commit_task(task, f"Start Task: {name}")
-        # build prompt: prologue + body + context + verify + acceptance + epilogue
-        prologue = read_md("PROLOGUE.md")
-        parts = [prologue, task["prompt"]] if prologue else [task["prompt"]]
-        for key in ("context", "verify"):
-            if key in task["sections"]:
-                parts.append(f"## {key.title()}\n\n{task['sections'][key]}")
-        if task["done"] and task["done"] != ["never"]:
-            checklist = "\n".join(f"- `{c}`" for c in task["done"])
-            parts.append(f"## Acceptance Criteria\n\nYour work is verified by these exact conditions — file paths and names must match precisely:\n\n{checklist}")
-        if is_project_task:
-            parts.append(read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)))
-        prompt = "\n\n".join(parts)
+
+        # build prompt: prologue + body + epilogue
+        prologue = read_md("PROLOGUE.md") or ""
+        body = task["prompt"] or ""
+        epilogue = read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)) if is_project_task else ""
+        prompt = "\n\n".join(p for p in [prologue, body, epilogue] if p)
 
         # Load agent if specified
         agent_def = None
@@ -1680,7 +1662,7 @@ if [[ "\${1:-}" == "teardown" ]]; then
   printf "Hit 'y' to confirm: "
   read -r confirm
   if [[ "\$confirm" != "y" ]]; then
-    echo -e "\033[33mfactory:\033[0m teardown cancelled"
+    echo -e "\033[33m⚙ factory:\033[0m teardown cancelled"
     exit 1
   fi
   cp "$FACTORY_DIR/factory.sh" "$SOURCE_DIR/factory.sh"
@@ -1791,29 +1773,29 @@ case "${1:-}" in
     ;;
   bootstrap)
     if [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
-      echo -e "\033[33mfactory:\033[0m already bootstrapped"
+      echo -e "\033[33m⚙ factory:\033[0m already bootstrapped"
       exit 0
     fi
     bootstrap
-    echo -e "\033[33mfactory:\033[0m bootstrap complete"
+    echo -e "\033[33m⚙ factory:\033[0m bootstrap complete"
     exit 0
     ;;
   teardown)
     teardown
-    echo -e "\033[33mfactory:\033[0m teardown complete"
+    echo -e "\033[33m⚙ factory:\033[0m teardown complete"
     exit 0
     ;;
   dump)
     DUMP_DIR="$(dirname "$0")/factory_dump"
     rm -rf "$DUMP_DIR"
     write_files "$DUMP_DIR"
-    echo -e "\033[33mfactory:\033[0m dumped to $DUMP_DIR"
+    echo -e "\033[33m⚙ factory:\033[0m dumped to $DUMP_DIR"
     exit 0
     ;;
   *)
     # if bootstrapped, resume
     if [[ -d "$FACTORY_DIR" ]] && [[ -f "$FACTORY_DIR/$PY_NAME" ]]; then
-      echo -e "\033[33mfactory:\033[0m resuming"
+      echo -e "\033[33m⚙ factory:\033[0m resuming"
       cd "$FACTORY_DIR"
       exec python3 "$PY_NAME"
     fi
