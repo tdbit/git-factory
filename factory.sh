@@ -5,7 +5,6 @@ set -euo pipefail
 # Creates .factory/, extracts the Python runner, and launches it.
 
 # --- constants ---
-NOISES="Clanging Bing-banging Grinding Ka-chunking Ratcheting Hammering Whirring Pressing Stamping Riveting Welding Bolting Torqueing Clatter-clanking Thudding Shearing Punching Forging Sparking Sizzling Honing Milling Buffing Tempering Ka-thunking"
 SOURCE_DIR="$(git rev-parse --show-toplevel)"
 FACTORY_DIR="${SOURCE_DIR}/.factory"
 PROJECT_WORKTREES="${FACTORY_DIR}/worktrees"
@@ -348,7 +347,7 @@ def read_md(name):
 LIBRARY
 cat > "$1/$PY_NAME" <<'RUNNER'
 #!/usr/bin/env python3
-import os, sys, re, signal, time, shutil, subprocess, json, threading, atexit
+import os, sys, re, signal, time, shutil, subprocess, json, threading, atexit, random
 from library import (
     ROOT, TASKS_DIR, STATE_DIR, PARENT_REPO, DEFAULT_TOOLS,
     parse_frontmatter, load_tasks, update_task_meta, next_id,
@@ -359,6 +358,7 @@ from library import (
 
 AGENTS_DIR = ROOT / "agents"
 LOGS_DIR = ROOT / "logs"
+NOISES = "Clanging Bing-banging Grinding Ka-chunking Ratcheting Hammering Whirring Pressing Stamping Riveting Welding Bolting Torqueing Clatter-clanking Thudding Shearing Punching Forging Sparking Sizzling Honing Milling Buffing Tempering Ka-thunking".split()
 
 # --- config (written once at bootstrap) ---
 _config = None
@@ -831,6 +831,12 @@ def run():
     log_path = LOGS_DIR / time.strftime("%Y-%m-%d_%H%M%S.log")
     _run_log_file = open(log_path, "w")
     atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
+
+    noise = random.choice(NOISES)
+    repo = PARENT_REPO.name
+    n = len(load_tasks())
+    log(f"\033[33m⚙  {noise}… factory is starting up\033[0m")
+    log(f"   repo: {repo}  ·  tasks: {n}  ·  provider: {cli[0]}\n\033[2mlogs: {log_path}\033[0m\n")
 
     def commit_task(task, message, scoop=False, work_dir=None):
         """Commit task metadata on the factory branch."""
