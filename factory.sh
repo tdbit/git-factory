@@ -680,14 +680,15 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
 def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cli_name=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which(cli_name or "claude")
     if not cli_path:
-        log("claude CLI not found on PATH")
+        log(f"\033[33m⚙ factory\033[0m shutting down")
+        log(f"  ✗ \033[31mclaude CLI not found on PATH\033[0m")
         return False, None
     work_dir = cwd or ROOT
 
     full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
 
     model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
-    max_turns = os.environ.get("FACTORY_MAX_TURNS", "16").strip()
+    max_turns = os.environ.get("FACTORY_MAX_TURNS", "32").strip()
     model_arg = ["--model", model_name]
     log(f"  → using: {cli_name or 'claude'} \033[2m({model_name})\033[0m")
 
