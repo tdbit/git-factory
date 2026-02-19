@@ -309,6 +309,8 @@ def next_task(tasks=None):
         if done_map.get(t["_path"].name):
             continue
         prev = t.get("previous", "").removeprefix("tasks/")
+        if prev and not prev.endswith(".md"):
+            prev += ".md"
         if prev and not done_map.get(prev, False):
             continue
         return t
@@ -1455,14 +1457,18 @@ For each question: investigate first, then state what you found. Use whatever me
 
 ### 5. Create follow-on task
 
-When all four questions are answered, create a task file in `tasks/`. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-[task-author]-understanding.md`.  The [task-author] **MUST** be the author of your task prompt.
+When all four questions are answered, create a task file in `tasks/`. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-[slug]-understanding.md`.
+
+Read the `author` field from **your own task's** frontmatter. That value is the agent that invoked you. The follow-on task's `handler` **MUST** be set to that value — not to `understand`, not to your own name.
+
+Example: if your task has `author: planner`, the follow-on task gets `handler: planner`.
 
 Frontmatter:
 ```
 ---
 author: understand
-handler: [task-author: the author of the current understand task]
-previous: [task-name: the name of the current understand task]
+handler: {author from YOUR task's frontmatter}
+previous: {your task's filename, e.g. tasks/0002-understand.md}
 status: backlog
 ---
 ```
