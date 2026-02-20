@@ -260,6 +260,8 @@ def check_one_condition(cond, target_dir=None):
         return not p.exists() or args[1] not in p.read_text()
     elif func == "command":
         try:
+            # Yes, I get that this is unsafe but the commands are written by the factory & its agents
+            # We trust that output inherently and being unsafe allows for complex (read: actually useful) checks
             subprocess.run(args[0], shell=True, cwd=base, check=True, capture_output=True)
             return True
         except subprocess.CalledProcessError:
