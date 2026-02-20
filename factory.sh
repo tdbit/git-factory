@@ -25,7 +25,7 @@ fi
 # --- detect default branch ---
 REMOTE_HEAD="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')" || true
 DEFAULT_BRANCH=""
-for _b in main master "$REMOTE_HEAD"; do
+for _b in "$REMOTE_HEAD" main master; do
   [[ -n "$_b" ]] && git show-ref --verify --quiet "refs/heads/$_b" && DEFAULT_BRANCH="$_b" && break
 done
 [[ -n "$DEFAULT_BRANCH" ]] || DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -255,7 +255,7 @@ def check_one_condition(cond, target_dir=None):
         return p.exists() and args[1] in p.read_text()
     elif func == "file_missing_text":
         if any(ch in args[0] for ch in "*?[]"):
-            return all(args[1] not in f.read_text() for f in base.glob(args[0])) or not any(base.glob(args[0]))
+            return all(args[1] not in f.read_text() for f in base.glob(args[0]))
         p = base / args[0]
         return not p.exists() or args[1] not in p.read_text()
     elif func == "command":
@@ -356,7 +356,7 @@ def _provider_cli():
     return None
 
 def ensure_project_worktree(project_path):
-    """Create project branch (off default branch) and worktree if needed."""
+    """Create project branch and worktree if needed."""
     slug = project_slug(project_path)
     branch = project_branch_name(project_path)
     wt_dir = ROOT / "worktrees" / slug
@@ -364,37 +364,26 @@ def ensure_project_worktree(project_path):
 
     def _git(*args):
         return subprocess.check_output(
-            ["git"] + list(args),
-            cwd=PARENT_REPO,
-            stderr=subprocess.STDOUT,
+            ["git"] + list(args), cwd=PARENT_REPO, stderr=subprocess.STDOUT
         ).decode().strip()
 
-    # create branch if missing
-    created_branch = False
+    # ensure branch exists
     try:
         _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
     except subprocess.CalledProcessError:
         _git("branch", branch, default_branch)
-        created_branch = True
 
-    # create worktree if missing or stale
-    created_worktree = False
+    # if dir exists but isn't a registered worktree, nuke it
     if wt_dir.exists():
-        try:
-            wt_list = _git("worktree", "list", "--porcelain")
-            if str(wt_dir.resolve()) not in wt_list:
-                _git("worktree", "remove", "--force", str(wt_dir))
-                wt_dir.mkdir(parents=True, exist_ok=True)
-                _git("worktree", "add", str(wt_dir), branch)
-                created_worktree = True
-        except subprocess.CalledProcessError:
-            pass
-    else:
+        wt_list = _git("worktree", "list", "--porcelain")
+        if str(wt_dir.resolve()) not in wt_list:
+            shutil.rmtree(wt_dir, ignore_errors=True)
+            _git("worktree", "prune")
+
+    # create worktree if needed
+    if not wt_dir.exists():
         wt_dir.parent.mkdir(parents=True, exist_ok=True)
         _git("worktree", "add", str(wt_dir), branch)
-        created_worktree = True
-
-    if created_branch or created_worktree:
         base_hash = _git("rev-parse", "--short", branch)
         log(f"\033[33m⚙ factory\033[0m created workstream")
         log(f"  → branch: \033[2m{branch}\033[0m\n  → worktree: \033[2m{slug}\033[0m\n  → base: \033[2m{default_branch}@{base_hash}\033[0m\n")
@@ -1830,6 +1819,7 @@ teardown() {
     for wt in "$FACTORY_DIR/worktrees"/*/; do
       [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
     done
+    git worktree prune 2>/dev/null || true
   fi
 
   rm -rf "$FACTORY_DIR"
