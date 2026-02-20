@@ -1151,7 +1151,7 @@ author: planner
 status: backlog
 ---
 
-<Purpose restatement>. This initiative advances <measure name> by <how closing this gap moves the measure>.
+Very briefly re-interpret the **purpose** and outline an initiative that advances the codebase along some **measure** by focusing on some **part** or **principle**.
 
 ## Problem
 
@@ -1489,7 +1489,7 @@ Structure the file as:
 
 ```
 
-Why this entity exists or what it's for. Start with a very concise bolded statement: "The purpose of X is to...". Restate this in a new paragraph that includes what becomes true when it succeeds.
+Why this entity exists or what it's for. Start with an extremely concise bolded statement: "The purpose of X is to...". Restate this in a new paragraph that includes what becomes true when it succeeds.
 
 # Measures
 
