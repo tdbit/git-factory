@@ -1876,6 +1876,7 @@ case "${1:-}" in
     echo "   [claude|codex]   bootstrap or resume with specified provider (default: $PROVIDER)"
     echo "   bootstrap        bootstrap .factory/ without launching the agent"
     echo "   dump             write all factory files to ./factory_dump/"
+    echo "   explain          use the agent to explain what factory.sh does"
     echo "   teardown         tear down .factory/, worktrees, and factory/* branches"
     echo "   help             display this help message"
     exit 0
@@ -1892,6 +1893,14 @@ case "${1:-}" in
   teardown)
     teardown
     echo -e "\033[33m⚙ factory:\033[0m teardown complete"
+    exit 0
+    ;;
+  explain)
+    EXPLAIN_PROMPT="You are reading factory.sh — a single-file autonomous software factory installer. Explain what it is, how bootstrap/runtime/teardown work, and the key components.  Include ASCII diagrams for: overall architecture, bootstrap flow, runtime loop, and task lifecycle."
+    case "$PROVIDER" in
+      claude|claude-code) cat "$0" | "$PROVIDER" -p "$EXPLAIN_PROMPT" | less -R ;;
+      codex)             cat "$0" | codex -q "$EXPLAIN_PROMPT" | less -R ;;
+    esac
     exit 0
     ;;
   dump)
