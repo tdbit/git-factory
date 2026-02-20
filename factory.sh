@@ -1489,7 +1489,7 @@ Structure the file as:
 
 ```
 
-Why this entity exists or what it's for. Start with an extremely concise bolded statement: "The purpose of X is to...". Restate this in a new paragraph that includes what becomes true when it succeeds.
+Why this entity exists or what it's for. Start by answering, in **10 words or less**, "What is this entity's purpose?".  Expand on this purpose, starting in a new paragraph that includes what becomes true when it succeeds.
 
 # Measures
 
