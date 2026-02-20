@@ -1025,7 +1025,7 @@ chmod +x "$1/$PY_NAME"
 write_prologue_md() {
 local REPO="$(basename "$SOURCE_DIR")"
 cat > "$1/PROLOGUE.md" <<PROLOGUE
-You are a coding agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata for \`$REPO\`.
+You are an agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata for \`$REPO\`.
 
 Source repo: \`$SOURCE_DIR\`
 Factory repo: \`$FACTORY_DIR\`
@@ -1366,7 +1366,7 @@ key: value - frontmatter key-value pairs go here
 **Frontmatter (author-set):**
 - `tools` — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`). Overrides the agent's tools if set.
 - `author` — who created this task (`planner`, `fixer`, `factory`, or a custom name).
-- `handler` — which agent runs this task (`developer`, `thinker`, `planner`, `fixer`). Use `developer` for source repo changes.
+- `handler` — which agent runs this task (`developer`, `thinker`, `planner`, `tasker`, `fixer`). Use `developer` for source repo changes. Use `tasker` for decomposing projects into tasks.
 - `parent` — project this task advances (e.g. `projects/0001-auth-hardening.md`). Omit for factory maintenance tasks.
 - `previous` — task that must complete first (e.g. `tasks/0003-other-task.md`).
 
@@ -1514,19 +1514,6 @@ Cross-cutting conventions, architectural patterns, design constraints.  Each wit
 ```
 
 The file should be readable on its own. No frontmatter, no YAML. Purpose and measures lead because they orient all downstream work. Parts follow because they tell the planner where to scope work. Principles last because they guide execution.
-
-## 5. Update the task
-
-Once the task has been successfully completed, append the following to the task:
-
-```
----
-
-## Task Complete
-
-The outcome of the task including the very concise statement from the purpose file.
-
-```
 
 # Halt Condition
 
