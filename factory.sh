@@ -73,7 +73,7 @@ def _task_line(t):
     return "- " + " ".join(parts)
 
 
-def _active_items(dirname, heading):
+def active_items(dirname, heading):
     """Scan a directory for active items, return (markdown section, count)."""
     if not (d := ROOT / dirname).exists():
         return f"## {heading}\n\nNone active.\n", 0
@@ -90,7 +90,7 @@ def _active_items(dirname, heading):
     return "\n".join(lines), count
 
 
-def _summarize_queue(tasks):
+def summarize_queue(tasks):
     """Build a markdown summary of the task queue."""
     completed = [t for t in tasks if t["status"] == "completed"]
     stopped = [t for t in tasks if t["status"] == "stopped"]
@@ -114,29 +114,13 @@ def _summarize_queue(tasks):
     return "\n".join(lines)
 
 
-def assess(tasks):
-    """Build a level-specific planning prompt. Returns (prompt, level)."""
-    ini_section, ini_active = _active_items("initiatives", "Active Initiatives")
-    prj_section, prj_active = _active_items("projects", "Active Projects")
-    queue = _summarize_queue(tasks)
-
-    if ini_active == 0:
-        level = "initiative"
-        spec = "specs/INITIATIVES.md"
-        prompt = f"{queue}\n{ini_section}\n\nRead `{spec}`. Create an initiative.\n"
-    elif prj_active == 0:
-        level = "project"
-        spec = "specs/PROJECTS.md"
-        prompt = f"{queue}\n{ini_section}\n\nRead `{spec}`. Decompose the active initiative into projects.\n"
-    else:
-        level = "task"
-        spec = "specs/TASKS.md"
-        prompt = f"{queue}\n{prj_section}\n\nRead `{spec}`. Create tasks for the active project.\n"
-
-    return prompt, level
+def purpose_of(entity):
+    """Return the relative path to the purpose file for an entity, or None if it doesn't exist."""
+    path = ROOT / "purpose" / f"{entity}.md"
+    return str(path.relative_to(ROOT)) if path.exists() else None
 
 
-def triage(task, details):
+def triage(task, details, work_dir=None):
     """Collect failed task, condition results, log tail for the fixer."""
     task_content = task["_path"].read_text()
     task_rel = task["_path"].relative_to(ROOT)
@@ -144,6 +128,8 @@ def triage(task, details):
         f"  {'✓' if ok else '✗'} {cond}" for cond, ok in (details or []))
     body = f"## Failed Task ({task_rel})\n\n```\n{task_content}\n```\n\n"
     body += f"## Condition Results\n\n{cond_report}\n\n"
+    if work_dir and Path(work_dir) != ROOT:
+        body += f"## Worktree\n\n`{work_dir}`\n\n"
     rlp = STATE_DIR / "last_run.jsonl"
     if rlp.exists():
         run_log_tail = "\n".join(rlp.read_text().splitlines()[-50:])
@@ -164,7 +150,12 @@ def parse_task(path):
     meta, body = parsed
     done_lines = []
     in_done = False
+    in_fence = False  # skip fenced blocks (triage embeds tasks in code fences)
     for line in body.split("\n"):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        if in_fence:
+            continue
         if re.match(r'^##\s+[Dd]one\s*$', line):
             in_done = True
             continue
@@ -187,7 +178,6 @@ def parse_task(path):
         "author": meta.get("author", ""),
         "parent": meta.get("parent", ""),
         "previous": meta.get("previous", ""),
-        "successor": meta.get("successor", ""),
         "stop_reason": meta.get("stop_reason", ""),
         "done": done_lines,
         "prompt": body.strip(),
@@ -259,9 +249,13 @@ def check_one_condition(cond, target_dir=None):
     elif func == "file_absent":
         return not _glob_matches(base, args[0])
     elif func == "file_contains":
+        if any(ch in args[0] for ch in "*?[]"):
+            return any(args[1] in f.read_text() for f in base.glob(args[0]))
         p = base / args[0]
         return p.exists() and args[1] in p.read_text()
     elif func == "file_missing_text":
+        if any(ch in args[0] for ch in "*?[]"):
+            return all(args[1] not in f.read_text() for f in base.glob(args[0])) or not any(base.glob(args[0]))
         p = base / args[0]
         return not p.exists() or args[1] not in p.read_text()
     elif func == "command":
@@ -295,7 +289,6 @@ def next_task(tasks=None):
     eligible = [t for t in tasks if t["status"] not in ("completed", "stopped")]
     done_map = {t["_path"].name: True for t in tasks if t["status"] == "completed"}
     done_map.update({t["_path"].name: (bool(t["done"]) and check_done(t["done"])) for t in eligible})
-    task_map = {t["_path"].name: t for t in tasks}
     for t in eligible:
         if done_map.get(t["_path"].name):
             continue
@@ -304,11 +297,6 @@ def next_task(tasks=None):
             prev += ".md"
         if prev and not done_map.get(prev, False):
             continue
-        # resolve successor routing: if previous task named a successor, use it as handler
-        if prev and (prev_task := task_map.get(prev)):
-            if successor := prev_task.get("successor", ""):
-                t = dict(t, handler=successor)
-                update_task_meta(t, handler=successor)
         return t
     return None
 
@@ -337,7 +325,7 @@ from library import (
     parse_frontmatter, load_tasks, update_task_meta, next_id,
     check_done, check_done_details, next_task,
     project_slug, project_branch_name, read_md,
-    assess, triage,
+    active_items, summarize_queue, purpose_of, triage,
 )
 
 AGENTS_DIR = ROOT / "agents"
@@ -380,13 +368,15 @@ def ensure_project_worktree(project_path):
         ).decode().strip()
 
     # create branch if missing
+    created_branch = False
     try:
         _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
     except subprocess.CalledProcessError:
         _git("branch", branch, default_branch)
-        log(f"\033[33m⚙ factory\033[0m created branch\n  → branch: \033[2m{branch}\033[0m\n  → base: \033[2m{default_branch}\033[0m\n")
+        created_branch = True
 
     # create worktree if missing or stale
+    created_worktree = False
     if wt_dir.exists():
         try:
             wt_list = _git("worktree", "list", "--porcelain")
@@ -394,13 +384,18 @@ def ensure_project_worktree(project_path):
                 _git("worktree", "remove", "--force", str(wt_dir))
                 wt_dir.mkdir(parents=True, exist_ok=True)
                 _git("worktree", "add", str(wt_dir), branch)
-                log(f"\033[33m⚙ factory\033[0m re-created stale worktree {slug}")
+                created_worktree = True
         except subprocess.CalledProcessError:
             pass
     else:
         wt_dir.parent.mkdir(parents=True, exist_ok=True)
         _git("worktree", "add", str(wt_dir), branch)
-        log(f"\033[33m⚙ factory\033[0m created worktree {slug} at {wt_dir}")
+        created_worktree = True
+
+    if created_branch or created_worktree:
+        base_hash = _git("rev-parse", "--short", branch)
+        log(f"\033[33m⚙ factory\033[0m created workstream")
+        log(f"  → branch: \033[2m{branch}\033[0m\n  → worktree: \033[2m{slug}\033[0m\n  → base: \033[2m{default_branch}@{base_hash}\033[0m\n")
 
     return wt_dir
 
@@ -408,6 +403,7 @@ _has_progress = False
 _run_log_file = None
 _ansi_regex = re.compile(r"\033\[[0-9;]*m")
 _total_cost = 0.0
+_task_count = 0
 _start_time = None
 
 def _show_progress(line):
@@ -452,10 +448,19 @@ def _cleanup_pid():
     except OSError:
         pass
 
+def _log_summary():
+    if _start_time is None:
+        return
+    elapsed = time.monotonic() - _start_time
+    mins = int(elapsed // 60)
+    secs = int(elapsed % 60)
+    log(f"\033[33m⚙ factory closed\033[0m {_task_count} tasks, ${_total_cost:.2f}, {mins}m{secs:02d}s")
+
 def _handle_signal(signum, frame):
     _cleanup_pid()
     log(f"\033[33m⚙ factory\033[0m shutting down")
     log(f"  ✗ \033[31mreceived signal {signum}, exiting\033[0m")
+    _log_summary()
     raise SystemExit(128 + signum)
 
 signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -481,14 +486,14 @@ def load_agent(name):
     }
 
 
-def write_task(slug, body, handler=None, tools=None, successor=None):
+def write_task(slug, body, handler=None, tools=None, previous=None):
     name = f"{str(next_id(TASKS_DIR)).zfill(4)}-{slug}"
     path = TASKS_DIR / f"{name}.md"
-    fm = ["author: runner", f"tools: {tools or DEFAULT_TOOLS}", "status: backlog"]
+    fm = ["author: factory", f"tools: {tools or DEFAULT_TOOLS}", "status: backlog"]
     if handler:
         fm.append(f"handler: {handler}")
-    if successor:
-        fm.append(f"successor: {successor}")
+    if previous:
+        fm.append(f"previous: {previous}")
     path.write_text("---\n" + "\n".join(fm) + "\n---\n\n" + body)
     sh("git", "add", str(path.relative_to(ROOT)))
     sh("git", "commit", "-m", f"New Task: {name}")
@@ -527,11 +532,6 @@ def _dump_debug(label, stderr_lines, stdout_garbage):
             print(line)
         log(f"--- end ---")
 
-def _build_prompt(prompt, allowed_tools, agent):
-    if not agent or not agent.get("prompt"):
-        return prompt, allowed_tools
-    return f"{agent['prompt']}\n\n---\n\n{prompt}", agent.get("tools") or allowed_tools
-
 def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which("codex")
     if not cli_path:
@@ -540,7 +540,11 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
         return False, None
     work_dir = cwd or ROOT
 
-    full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
+    if agent and agent.get("prompt"):
+        full_prompt = f"{agent['prompt']}\n\n---\n\n{prompt}"
+        allowed_tools = agent.get("tools") or allowed_tools
+    else:
+        full_prompt = prompt
 
     requested_model = os.environ.get("FACTORY_CODEX_MODEL", "").strip()
     fallback_models = [
@@ -685,7 +689,10 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         return False, None
     work_dir = cwd or ROOT
 
-    full_prompt, allowed_tools = _build_prompt(prompt, allowed_tools, agent)
+    system_args = []
+    if agent and agent.get("prompt"):
+        system_args = ["--system-prompt", agent["prompt"]]
+        allowed_tools = agent.get("tools") or allowed_tools
 
     model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
     max_turns = os.environ.get("FACTORY_MAX_TURNS", "32").strip()
@@ -693,10 +700,10 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     log(f"  → using: {cli_name or 'claude'} \033[2m({model_name})\033[0m")
 
     proc = subprocess.Popen(
-        [cli_path, "--dangerously-skip-permissions", "-p", "--verbose",
+        [cli_path, "--permission-mode", "bypassPermissions", "-p", "--verbose",
          "--output-format", "stream-json",
          "--max-turns", max_turns,
-         "--allowedTools", allowed_tools, *model_arg, "--", full_prompt],
+         "--allowedTools", allowed_tools, *system_args, *model_arg, "--", prompt],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
@@ -815,23 +822,38 @@ def run():
     if not _acquire_pid():
         return
 
-    global _run_log_file, _start_time, _total_cost
+    global _run_log_file, _start_time, _total_cost, _task_count
     _start_time = time.monotonic()
     _total_cost = 0.0
+    _task_count = 0
+
     LOGS_DIR.mkdir(exist_ok=True)
     log_path = LOGS_DIR / time.strftime("%Y-%m-%d_%H%M%S.log")
     _run_log_file = open(log_path, "w")
     atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
 
-    log(f"\033[H\033[2J\n\033[33m⚙ factory\033[0m starting up")
+    log(f"\033[H\033[2J\033[33m⚙ factory\033[0m starting up")
     log(f"  → repo: \033[2m{PARENT_REPO}\033[0m\n  → logs: \033[2m{log_path}\033[0m\n  → tasks: \033[2m{TASKS_DIR} ({len(load_tasks())})\033[0m \n")
 
-    def commit_task(task, message, scoop=False, work_dir=None):
-        """Commit task metadata on the factory branch."""
-        if scoop and (work_dir is None or work_dir == ROOT):
+    # --- git helpers ---
+    #
+    # Two repos are in play:
+    #   1. Factory repo (.factory/) — task metadata, initiatives, projects, agent defs
+    #   2. Source repo worktrees (.factory/worktrees/<slug>) — actual code changes
+    #
+    # Factory tasks (thinker/planner/fixer) work in the factory repo.
+    #   Agent commits are squashed so each task = one clean commit.
+    #
+    # Project tasks (developer) work in a worktree on a factory/* branch.
+    #   Agent commits stay as-is. Only the task file is updated in the factory repo.
+
+    def commit_factory(task, message, stage_all=False):
+        """Commit in the factory repo. Always stages the task file.
+        If stage_all, also stages everything else (for factory tasks where
+        the agent created files like initiatives/, projects/, tasks/)."""
+        if stage_all:
             try:
-                status = sh("git", "status", "--porcelain")
-                if status:
+                if sh("git", "status", "--porcelain"):
                     sh("git", "add", "-A")
             except Exception:
                 pass
@@ -840,7 +862,19 @@ def run():
         sh("git", "commit", "-m", message)
 
     def git_head(cwd):
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cwd, stderr=subprocess.STDOUT).decode().strip()
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=cwd, stderr=subprocess.STDOUT
+        ).decode().strip()
+
+    def git_log_subjects(cwd, old, new):
+        """Return commit subjects between old..new, or [] on error."""
+        try:
+            return subprocess.check_output(
+                ["git", "log", "--format=%s", f"{old}..{new}"],
+                cwd=cwd, stderr=subprocess.STDOUT
+            ).decode().strip().splitlines()
+        except subprocess.CalledProcessError:
+            return []
 
     while True:
         task = next_task()
@@ -851,42 +885,60 @@ def run():
                    for t in all_tasks):
                 log(f"\033[33m⚙ factory\033[0m shutting down")
                 log(f"  ✗ \033[31mtasks exist but are blocked on dependencies\033[0m")
+                _log_summary()
                 return
-            prompt, level = assess(all_tasks)
-            write_task(f"plan-{level}", prompt,
-                        handler="planner",
-                        tools="Read,Write,Edit,Glob,Grep,Bash")
-            continue
-        name = task["name"]
-        log(f"\033[32mtask\033[0m started: {name}")
+            has_purpose = purpose_of("repo") is not None
+            prj_section, prj_active = active_items("projects", "Active Projects")
 
+            if not has_purpose:
+                task_name = f"understand-{PARENT_REPO.name}"
+                prompt = f"Understand the purpose of the source repository `{PARENT_REPO}` and write it in `purpose/repo.md`"
+                write_task(task_name, prompt, handler="thinker", tools="Read,Glob,Grep,Write")
+            elif prj_active == 0:
+                queue = summarize_queue(all_tasks)
+                ini_section, _ = active_items("initiatives", "Active Initiatives")
+                prompt = f"Read `purpose/repo.md`.\n\n{queue}\n{ini_section}\n"
+                write_task("roadmap", prompt, handler="planner", tools="Read,Write,Edit,Glob,Grep")
+            else:
+                queue = summarize_queue(all_tasks)
+                prompt = f"Read `purpose/repo.md`.\n\n{queue}\n{prj_section}\n"
+                write_task("decompose", prompt, handler="tasker", tools="Read,Write,Edit,Glob,Grep")
+            continue
+
+        name = task["name"]
         is_project_task = task["parent"].startswith("projects/")
         work_dir = ensure_project_worktree(task["parent"]) if is_project_task else ROOT
 
-        update_task_meta(task, status="active", pid=str(os.getpid()))
-        commit_task(task, f"Start Task: {name}")
+        log(f"\033[32mtask\033[0m started: {name}")
 
-        # build prompt: prologue + body + epilogue
+        # mark active and commit "Start Task" in factory repo
+        update_task_meta(task, status="active", pid=str(os.getpid()))
+        commit_factory(task, f"Start Task: {name}")
+
+        # build prompt
         prologue = read_md("PROLOGUE.md") or ""
         body = task["prompt"] or ""
-        epilogue = read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)) if is_project_task else ""
+        epilogue = read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)).replace("{source_repo}", str(PARENT_REPO)) if is_project_task else ""
         prompt = "\n\n".join(p for p in [prologue, body, epilogue] if p)
 
-        # Load agent if specified
         agent_def = None
         if task.get("handler"):
             agent_name = task["handler"].replace("agents/", "").replace(".md", "")
             agent_def = load_agent(agent_name)
             if agent_def:
-                log(f"using agent: {agent_name}")
+                log(f"  → agent: {agent_name}")
 
+        # snapshot HEAD before agent runs (in whichever repo the agent works in)
         head_before = git_head(work_dir)
 
+        # --- run agent ---
         run_log = _open_run_log(name)
         try:
             ok, result = run_agent(prompt, allowed_tools=task["tools"], agent=agent_def, cwd=work_dir, run_log=run_log)
         finally:
             run_log.close()
+
+        # extract result metadata
         res = result or {}
         session_id = res.get("session_id")
         if session_id:
@@ -898,73 +950,70 @@ def run():
         duration = f"{duration_ms/1000:.1f}s" if duration_ms else None
         cost = f"${cost_usd:.4f}" if cost_usd else None
 
-        # check if agent made any commits
         head_after = git_head(work_dir)
         agent_committed = head_before != head_after
 
+        # --- agent crashed ---
         if not ok:
             if is_project_task:
+                # revert uncommitted changes in the worktree
                 try:
                     subprocess.check_output(["git", "checkout", "--", "."], cwd=work_dir, stderr=subprocess.STDOUT)
                     subprocess.check_output(["git", "clean", "-fd"], cwd=work_dir, stderr=subprocess.STDOUT)
                 except Exception:
                     pass
             update_task_meta(task, status="stopped", stop_reason="failed", duration=duration, cost=cost)
-            commit_task(task, f"Failed Task: {name}")
+            commit_factory(task, f"Failed Task: {name}")
             info = _format_result(result)
             log(f"  ✗ task \033[31mcrashed\033[0m \033[2m{info}\033[0m" if info else "  ✗ task \033[31mcrashed\033[0m")
             log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
             log("")
+            _task_count += 1
+            _log_summary()
             return
 
-        # capture agent commit subjects before squash
-        summary_lines = []
-        if agent_committed:
-            try:
-                summary_lines = subprocess.check_output(
-                    ["git", "log", "--format=%s", f"{head_before}..{head_after}"],
-                    cwd=work_dir, stderr=subprocess.STDOUT
-                ).decode().strip().splitlines()
-            except subprocess.CalledProcessError:
-                pass
+        # --- agent succeeded ---
 
-        # squash agent commits into the runner's commit (factory tasks only)
+        # capture agent commit subjects (before potential squash)
+        summary_lines = git_log_subjects(work_dir, head_before, head_after) if agent_committed else []
+
+        # factory tasks: squash agent commits so the whole task is one commit
         if agent_committed and not is_project_task:
             subprocess.check_output(
                 ["git", "reset", "--soft", head_before], cwd=work_dir, stderr=subprocess.STDOUT
             )
 
-        def finish_task(passed, details):
-            label = "Complete" if passed else "Incomplete"
-            meta = dict(status="completed", commit=head_after) if passed else dict(status="stopped", stop_reason="incomplete")
-            update_task_meta(task, **meta, duration=duration, cost=cost)
-            cwd = work_dir if is_project_task else None
-            commit_task(task, f"{label} Task: {name}", scoop=True, work_dir=cwd)
-            info = _format_result(result)
-            if passed:
-                log(f"  ✓ conditions: \033[32mpassed\033[0m \033[2m{info}\033[0m" if info else "  ✓ all conditions \033[32mpassed\033[0m")
-            else:
-                log(f"  ✗ conditions: \033[31mfailed\033[0m \033[2m{info}\033[0m" if info else "  ✗ conditions \033[31mnot met\033[0m")
-                for cond, ok_cond in details:
-                    log(f"    {'✓' if ok_cond else '✗'} {cond}")
-                log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
-                log(f"  → task: {task['_path'].relative_to(ROOT)}")
-
+        # check completion conditions
         passed, details = check_done_details(task["done"], target_dir=work_dir)
-        finish_task(passed, details)
 
-        # log summary of agent commits
+        # update task metadata and commit in factory repo
+        if passed:
+            update_task_meta(task, status="completed", commit=head_after, duration=duration, cost=cost)
+        else:
+            update_task_meta(task, status="stopped", stop_reason="incomplete", duration=duration, cost=cost)
+        label = "Complete" if passed else "Incomplete"
+        commit_factory(task, f"{label} Task: {name}", stage_all=not is_project_task)
+
+        # log result
+        info = _format_result(result)
+        if passed:
+            log(f"  ✓ conditions: \033[32mpassed\033[0m \033[2m{info}\033[0m" if info else "  ✓ all conditions \033[32mpassed\033[0m")
+        else:
+            log(f"  ✗ conditions: \033[31mfailed\033[0m \033[2m{info}\033[0m" if info else "  ✗ conditions \033[31mnot met\033[0m")
+            for cond, ok_cond in details:
+                log(f"    {'✓' if ok_cond else '✗'} {cond}")
+            log(f"  → log: {STATE_DIR / 'last_run.jsonl'}")
+            log(f"  → task: {task['_path'].relative_to(ROOT)}")
         for line in summary_lines:
             log(f"    {line}")
         log("")
+        _task_count += 1
 
-        # write understand task on incomplete (not for planner/fixer/understand tasks)
-        # successor=fixer routes the understand output to fixer automatically
-        if not passed and task.get("handler") not in ("planner", "fixer", "understand"):
-            write_task("understand-failure", triage(task, details),
-                       handler="understand",
-                       successor="fixer",
-                       tools="Read,Glob,Grep,Write")
+        # route incomplete tasks to fixer (not for planner/tasker/fixer/thinker tasks)
+        if not passed and task.get("handler") not in ("planner", "tasker", "fixer", "thinker"):
+            write_task("fix-failure", triage(task, details, work_dir=work_dir),
+                       handler="fixer",
+                       tools="Read,Write,Edit,Glob,Grep,Bash")
 
 if __name__ == "__main__":
     run()
@@ -981,9 +1030,11 @@ You are a coding agent operating inside \`.factory/\`, a standalone git repo tha
 Source repo: \`$SOURCE_DIR\`
 Factory repo: \`$FACTORY_DIR\`
 
-All file paths in factory metadata (task conditions, references, etc.) are relative to the factory root (\`.factory/\`). Never prefix paths with \`.factory/\` — you are already inside it.
+All file paths in factory metadata (task conditions, references, etc.) are relative to the factory root (\`.factory/\`). **NEVER** prefix paths with \`.factory/\` — you are already inside it.
 
 If your task has a \`## Done\` section, those are machine-evaluated conditions the runner checks after you finish. File paths and names must match precisely. Available conditions: \`file_exists("path")\`, \`file_absent("path")\`, \`file_contains("path", "text")\`, \`file_missing_text("path", "text")\`, \`command("cmd")\` (exit 0), \`never\` (recurring task).
+
+When creating task files, **ALWAYS** get the next ID by running: \`python3 -c "from library import next_id; from pathlib import Path; print(next_id(Path('tasks')))"\`. Zero-pad to 4 digits (e.g. \`0013\`).
 PROLOGUE
 }
 
@@ -1020,7 +1071,7 @@ Every agent follows this structure:
 
 One line. What this agent does. Not a persona, not a backstory. A capability.
 
-- "You understand things."
+- "You think about things."
 - "You plan work."
 - "You diagnose failures."
 
@@ -1109,6 +1160,8 @@ author: planner
 status: backlog
 ---
 
+<Purpose restatement>. This initiative advances <measure name> by <how closing this gap moves the measure>.
+
 ## Problem
 
 ## Outcome
@@ -1124,6 +1177,16 @@ status: backlog
 - `status` — lifecycle state (`backlog`, `active`, `suspended`, `completed`, `stopped`). Add `stop_reason` when setting `stopped`.
 - `author` — who created this initiative (`planner`, `fixer`, or a custom name).
 
+### Intro paragraph (the text before any `##` section)
+
+How this initiative connects to the purpose. Orientation for every downstream agent.
+
+- Restate the purpose in one sentence (the concise bolded statement from `purpose/repo.md`).
+- Name the specific measure this initiative advances.
+- Explain how closing this gap moves that measure.
+
+The purpose file is the canonical source of measures. The initiative's job is to connect to a measure, not redefine one.
+
 ### Problem
 
 What friction, gap, or limitation exists in the codebase right now.
@@ -1136,7 +1199,6 @@ What friction, gap, or limitation exists in the codebase right now.
 
 What is true when this initiative succeeds. The end state, not the work.
 
-- Connect to a specific purpose or measure from the understanding.
 - Not "we will add tests" — "developers can refactor core modules confidently because every public interface has contract tests."
 - One initiative, one outcome. If the outcome has "and" in it, you may have two initiatives.
 
@@ -1149,17 +1211,18 @@ What is in and what is out. Initiatives without boundaries expand forever.
 
 ### Measures
 
-How you know it's working. Observable signals.
+How you know the initiative is making progress. Break the outcome into parts that can each be independently observed.
 
-- Commands you can run, metrics you can check, behaviors you can demonstrate.
-- Draw from Measures in the understanding.
-- If you can't point to a specific measure, the initiative isn't grounded.
+- Not the purpose measures themselves — the initiative-level signals that show this specific gap is closing.
+- If the outcome is "the system is fast," the measures might be "API responses under 200ms" and "page loads under 1s."
+- If you can't break the outcome into observable parts, the initiative isn't concrete enough.
 
 ## What doesn't belong in an initiative
 
 - **Solutions.** An initiative names the problem and the desired end state. It does not prescribe how to get there. That's what projects are for.
 - **Vague problems.** "Code quality could be better" is not a problem. Name the specific gap with evidence from the source repo.
-- **Unmeasurable outcomes.** If you cannot write a Measures section with observable signals, the outcome is aspirational, not real.
+- **Disconnected outcomes.** If the intro paragraph can't name a specific measure from the purpose file, the initiative isn't grounded.
+- **Unmeasurable outcomes.** If you cannot break the outcome into observable parts in the Measures section, the outcome is aspirational, not real.
 - **Work that is really a project.** If the problem can be solved by one scoped deliverable, it's a project under an existing initiative, not a new initiative.
 - **Multiple problems.** One initiative, one problem. If the Problem section has two distinct threads, split them.
 
@@ -1167,10 +1230,11 @@ How you know it's working. Observable signals.
 
 Before creating an initiative, ask:
 
+- Can I restate the purpose and name the measure this initiative advances?
 - Can I state the problem in one sentence, grounded in evidence from the source repo?
 - Can I state the outcome as an end state, not as work to be done?
-- Can I list measures that an automated system could check?
-- Does this trace to a specific purpose or measure from the understanding?
+- Does the intro paragraph explain how closing this gap moves the named measure?
+- Can I break the outcome into independently observable parts?
 - Is this too big to be a project but too specific to be the entire purpose?
 
 If any answer is no, the initiative needs rework.
@@ -1179,7 +1243,8 @@ If any answer is no, the initiative needs rework.
 
 - **An initiative is a problem, not a solution.** It names what is wrong and what "fixed" looks like. It never prescribes how.
 - **Outcomes are end states, not activities.** "Add integration tests" is an activity. "Every API endpoint has a contract test that runs in CI" is an end state.
-- **Measures are the contract.** The planner checks measures to decide whether to mark an initiative completed. Everything else is orientation.
+- **The intro paragraph grounds the initiative.** It names the purpose, the measure, and the connection. Without it, downstream work drifts.
+- **Measures are the progress contract.** The planner checks measures to decide whether to mark an initiative completed. They break the outcome into observable parts.
 - **Scope prevents drift.** Without explicit exclusions, every initiative becomes "make everything better." The exclusions matter as much as the inclusions.
 - **One active initiative at a time.** Scarcity forces prioritization. If the current initiative isn't the most important thing, stop it and start one that is.
 INITIATIVES
@@ -1218,8 +1283,8 @@ How this project advances the parent initiative.
 How this project advances the parent initiative. Orientation for the agent creating tasks.
 
 - What slice of the initiative's problem space it addresses.
-- Which constituent from the understanding it addresses and what purpose it serves.
-- How it relates to sibling projects, if any exist.
+- Which constituent part from the purpose file it addresses and what purpose it serves.
+- How it relates to sibling parts or projects, if any exist.
 
 ### Deliverables
 
@@ -1235,7 +1300,7 @@ Testable criteria, one per deliverable. Each answers "how do I verify this deliv
 
 - Must map to automatable Done conditions (the same condition types tasks use: `file_exists`, `file_contains`, `command`, etc.).
 - No human judgment. "Code is cleaner" is not checkable. "Linter passes with zero warnings" is.
-- Connect to Measures from the understanding.
+- Connect to Measures from the purpose file.
 
 ### Scope
 
@@ -1301,7 +1366,7 @@ key: value - frontmatter key-value pairs go here
 **Frontmatter (author-set):**
 - `tools` — allowed tools (default: `Read,Write,Edit,Bash,Glob,Grep`). Overrides the agent's tools if set.
 - `author` — who created this task (`planner`, `fixer`, `factory`, or a custom name).
-- `handler` — which agent runs this task (e.g. `understand`, `planner`, `fixer`). Omit for default behavior.
+- `handler` — which agent runs this task (`developer`, `thinker`, `planner`, `fixer`). Use `developer` for source repo changes.
 - `parent` — project this task advances (e.g. `projects/0001-auth-hardening.md`). Omit for factory maintenance tasks.
 - `previous` — task that must complete first (e.g. `tasks/0003-other-task.md`).
 
@@ -1352,6 +1417,7 @@ Self-checks the agent applies to its own work before committing.
 Before creating a task, ask:
 
 - Can I state what's different when this is done in one sentence?
+- Can I write the expected commit message in one line? If not, it's more than one task.
 - Can I write done conditions that fully capture that sentence?
 - Does the prompt contain only what, not how?
 - Could any agent with the right capabilities complete this, not just one specific agent?
@@ -1361,6 +1427,7 @@ If any answer is no, the task needs rework.
 ## Principles
 
 - **A task is one thing.** If it has conditional branches, it's multiple tasks. If it has sequencing logic, it's a plan. If it modifies itself, it's broken.
+- **A task is one commit.** If you can't describe the change in a single commit message, the task is too broad. Split it.
 - **Done conditions are the contract.** Not the prompt, not the context, not the verify section. The runner only checks done conditions. Everything else is for the agent.
 - **The task carries the what. The agent carries the how.** Method, procedure, and technique do not belong in task prompts. If the prompt tells the agent how to do its work, the instructions belong in the agent definition instead.
 - **Context is orientation, not instruction.** It explains why the work matters. Agents read it but do not execute it.
@@ -1392,253 +1459,278 @@ TASKS
 
 # --- writer: agents/ ---
 write_agents() {
-cat > "$1/UNDERSTAND.md" <<'UNDERSTAND'
+cat > "$1/THINKER.md" <<'THINKER'
 ---
 tools: Read,Glob,Grep,Write
 author: factory
 ---
 
-# UNDERSTAND
+You divine purpose. You are given an entity and a scope. Your primary operation: determine why it exists and how to measure whether it's fulfilling that purpose. You also identify its parts and principles — the parts tell the planner where to focus work, the principles tell the developer how to make decisions.
 
-You understand things. You are given an entity and a question about it.
+# Method
 
-## Capabilities
+## 1. Examine the entity
 
-- Read files, directories, and source code
-- Search for patterns across a codebase (Glob, Grep)
-- Create a follow-on tasks containing your findings
+Investigate through two lenses:
 
-## Method
+**Principles** — What makes this entity what it is and not something else? Its defining characteristics, cross-cutting conventions, architectural patterns, design constraints. These aren't parts — they're properties that span the whole. A principle applies everywhere; if it only applies to one part, it's a property of that part.
 
-Answer all four questions about the entity you are examining, in order:
+**Parts** — What are the logical constituents? The major subsystems, modules, domains. Distinguish **essential** (traces to entity's purpose) from **incidental** (traces to platform/toolchain). Focus on essential parts — these are where work happens.
 
-### 1. What defines this thing? → Properties
+## 2. Divine purpose
 
-The Formal cause. What makes this entity what it is and not something else. Its defining characteristics, qualities, properties, cross-cutting conventions. These aren't parts — they're properties the entity has that span its constituents.
+Why does this entity exist? What becomes true when it succeeds? If it were gone, what would break? Apply "to what end?" until you can't. Mechanism is not purpose.
 
-Properties come before parts because parts are not always legible on their own. The raw composition of a thing may not reveal its real structure — what you see may reflect the medium, the era, or the toolchain more than the thing itself. You must understand the properties before the parts become meaningful.
+## 3. Determine measures
 
-### 2. What is it made of? → Parts
+How would you observe purpose being fulfilled *better or worse*? Measures define what "better" means. The planner uses them to find gaps. The fixer uses them to diagnose failures.
 
-The Material cause. What this entity is actually made of. Its concrete constituents, substance, stuff.
+For each measure:
+- It must track **degree**, not pass/fail. Prefer marginal over binary.
+- It must include a **method of observation** — a command, metric, or concrete thing you can point at.
+- It must connect to purpose.
 
-When identifying parts, distinguish **essential** from **incidental**:
+## 4. Write purpose file
 
-- **Essential** — exists because of what this entity does. Its purpose traces to the entity's purpose.
-- **Incidental** — exists because of what this entity is built with, deployed on, or constrained by. Its purpose traces to the platform, the environment, or the toolchain — not to the entity's own purpose.
+Write your output to `purpose/{scope}.md` where `{scope}` is the slug from your task (e.g. `purpose/repo.md`).
 
-Both are real. Both may warrant investigation. But they answer different questions, and confusing them obscures understanding. A JavaScript project's `node_modules/` is incidental — it exists because of the platform, not because of what the software does. The domain model in `src/models/` is essential.
+Structure the file as:
 
-### 3. Why does it exist? → Purpose
-
-The Final cause. The end this entity serves. To what end.  What something does is not why it exists. "It reads task files and invokes agents" describes mechanism. "Work keeps moving without human intervention" describes an end. If you can ask "to what end?" of your own statement and get a meaningful answer, you haven't reached purpose yet. Keep asking until you can't.
-
-"It translates business purpose into executable tasks." To what end? "So that the codebase improves systematically." To what end? "So that the product gets better without a human deciding what to work on next." Can you keep going? No. That's purpose.
-
-Purpose includes **measures** — how you'd observe purpose being fulfilled *better or worse*. Every measure must include a method of observation — a command, a metric, or a concrete thing you can point at.
-- Prefer marginal measures over binary ones. Purpose is not pass/fail — it is fulfilled to a degree. "Tests pass" is binary. "Time from change to confident deploy" is marginal — it tells you whether you're getting better. "Error messages exist" is binary. "Percentage of errors that tell the user what to do next" is marginal.
-- Measures are the observable face of purpose. "The purpose of X is to…" is incomplete without "…and you'd know it's succeeding *more* when…"
-
-### 4. What produces this thing? → Provenance
-
-The Efficient cause. What processes, pipelines, workflows, or activities bring this entity into being and keep it current. Not what it's made of (Parts) but what *makes* it — the build system, the deploy pipeline, the migration tool, the human workflow, the CI job.
-
-For a codebase: how does code get written, tested, built, and shipped? What generates artifacts? What enforces quality? What gates exist between a change and production?
-
-Provenance tells the caller what processes a task must work *within*. If you don't know how things get built and shipped, you can't write tasks that fit the actual development process.
-
-For each question: investigate first, then state what you found. Use whatever means are available — read files, search patterns, trace dependencies. Stop investigating when you can answer the question concretely, or when you've determined you can't.
-
-### 5. Create follow-on task
-
-When all four questions are answered, create a task file in `tasks/`. Scan the directory for the highest-numbered file, increment by one, and name it `NNNN-[slug]-understanding.md`.
-
-The runner will route this task to the correct handler automatically. You do not need to set `handler`.
-
-Frontmatter:
-```
----
-author: understand
-previous: {your task's filename, e.g. tasks/0002-understand.md}
-status: backlog
----
 ```
 
-Body: `## Understanding: {scope}` with subsections for **Properties**, **Parts**, **Purpose** (including Measures), and **Provenance**. This is the caller's context for its next action. If you did not produce all four, the caller cannot proceed.
+Why this entity exists or what it's for. Start with a very concise bolded statement: "The purpose of X is to...". Restate this in a new paragraph that includes what becomes true when it succeeds.
 
-**This is your only output.** Do not write to any other file. Do not modify your own task file.
+# Measures
 
-## Halt Condition
+How to observe purpose being fulfilled better or worse.  Each measure with its method of observation.
 
-If you cannot answer the question concretely — with references to specific things you examined — note the blockage in the follow-on task body: what you examined, what was ambiguous, and what questions need a human answer. The planner can then decide what to do.
+# Parts
 
-Specific signals that you're stuck:
+The logical constituents — major subsystems, modules, domains.  Essential parts only. Each with a one-line description of what it does and how it relates to purpose.
 
-- **Properties:** You can't identify any characteristic that distinguishes this entity from other things in its category.
-- **Parts:** You can't tell what's essential vs incidental — the structure is too opaque to decompose meaningfully.
-- **Purpose:** You can't answer at least three of: What becomes true when this succeeds? Who or what benefits? What capability becomes possible? What breaks if it's gone?
-- **Provenance:** You can't identify any process that produces or maintains this entity — no build, no pipeline, no workflow, no human routine.
+# Principles
 
-## Validation
+Cross-cutting conventions, architectural patterns, design constraints.  Each with enough context that a developer encountering a decision can check whether their choice is consistent.
+```
 
-- For properties: do they span the parts, or are they local to one component? A property that only applies to one part is a property of that part, not a property of the whole.
-- For purpose: does every purpose statement describe an end, not a mechanism? Apply the "to what end?" test — if the answer is meaningful, you haven't reached purpose.
-- For parts: did you distinguish essential from incidental? Could you justify the classification?
-- For provenance: did you identify the actual processes, not just the tools? "Uses GitHub Actions" is a tool. "PRs trigger lint, test, build; merge to main triggers deploy" is provenance.
+The file should be readable on its own. No frontmatter, no YAML. Purpose and measures lead because they orient all downstream work. Parts follow because they tell the planner where to scope work. Principles last because they guide execution.
 
-- Does every measure track degree, not just pass/fail?
-- Does every measure include a method of observation?
+## 5. Update the task
 
-## Rules
+Once the task has been successfully completed, append the following to the task:
+
+```
+---
+
+## Task Complete
+
+The outcome of the task including the very concise statement from the purpose file.
+
+```
+
+# Halt Condition
+
+Before writing, answer internally:
+- What becomes true when this succeeds?
+- Who or what benefits, and what friction disappears?
+- What capability becomes possible that didn't exist before?
+- If this were gone tomorrow, what would break?
+
+If you cannot answer at least three concretely, stop. Write the purpose file anyway, noting what you examined, what was ambiguous, and what needs a human answer.
+
+# Rules
 
 - No mission statements. No platitudes. No abstraction untethered from the entity.
-- Properties before parts. Understand what kind of thing it is before cataloging what it's made of.
-- Essential before incidental. Understand what the entity *is* before what it *happens to be built with*.
+- Purpose is the headline. Parts and principles serve it.
+- Principles before parts. Understand what kind of thing it is before cataloging what it's made of.
+- Essential before incidental.
 - Prefer evidence to inference. Name the thing, not the category.
-- Stop when done. Don't generate understanding you can't ground.
-UNDERSTAND
+- Stop when done. Don't generate purpose you can't ground.
+THINKER
 cat > "$1/PLANNER.md" <<'PLANNER'
 ---
-tools: Read,Write,Edit,Glob,Grep,Bash
+tools: Read,Write,Edit,Glob,Grep
 author: factory
 ---
 
-# PLANNER
+You set the roadmap. You create initiatives and decompose the active one into projects. You do not create tasks — the tasker handles that.
 
-You plan work at one level. Your task body tells you what to create (an initiative, projects, or tasks) and which spec to read.
+# Method
 
-You do not commit. The runner commits your work.
+## 1. Read Purpose
 
-## Method
+Your task body begins with `Read purpose/repo.md …`. Read it first. It defines:
 
-**Before anything else:** If your task body does not contain `## Understanding`, create a `handler: understand` task in `tasks/` and stop. Do not read specs, do not explore, do not proceed. You cannot plan without understanding.
+- **Purpose** — what the repo exists to do
+- **Measures** — how you know it's working
+- **Parts** — the subsystems and boundaries
+- **Principles** — constraints and values
 
-The understand task must contain **only a scope** — what entity to examine. Do not write a method, investigation checklist, or Done conditions. Example:
+Everything you create must trace back to this file. If the purpose file is missing, halt — create nothing and explain what's missing.
 
-```
----
-author: planner
-handler: understand
-successor: planner
-tools: Read,Glob,Grep,Write
-status: backlog
----
+## 2. Assess
 
-Examine the source repo at {path}.
-```
+Review existing initiatives and projects. Mark stale or superseded items `stopped` with `stop_reason: superseded`. Cascade completions upward (all projects done → initiative completed).
 
-### 1. Assess
+## 3. Create Initiatives
 
-Review existing items at this level. Mark stale or superseded items `stopped` with `stop_reason: superseded`. Cascade completions upward (all tasks done → project completed, all projects done → initiative completed).
+Read `specs/INITIATIVES.md`. Find the highest-leverage gap between the current state and the purpose. Before writing the Problem, write the intro paragraph: restating the purpose in one sentence, naming the measure this initiative advances and explaining how closing this gap moves that measure. Create 1–3 backlog initiatives. Activate exactly one.
 
-If any task has `stop_reason: failed` or was marked incomplete, follow `agents/FIXER.md` before proceeding.
+If an active initiative already exists with incomplete projects, skip this step.
 
-### 2. Create
+## 4. Decompose into Projects
 
-Read the spec file named in your task body. Create items at the level you were told:
+Read `specs/PROJECTS.md`. Take the active initiative and decompose it into independent, shippable slices. Each project should advance a specific part or measure. Create as many as needed. Activate 1–2.
 
-- **Initiative** — identify the highest-leverage gap between current state and purpose. Write the Problem section from evidence — run commands, read files, find concrete problems. Create 1–3 backlog initiatives. Activate exactly one.
-- **Project** — decompose the active initiative into independent, shippable slices. Create as many as needed. Activate 1–2.
-- **Task** — each task produces one deliverable or a clear fraction of one. Create all tasks needed for the active project. Activate exactly one.
+## 5. Validate
 
-### 3. Validate
+Confirm at least one project is `active` and ready for the tasker. If not, investigate and fix.
 
-Confirm at least one item is ready to run at the level you created. If not, investigate and fix.
+# Rules
 
-## Halt Condition
-
-If you lack understanding, create a `handler: understand` task scoped to what you need and stop.
-
-## Rules
-
-- Every initiative traces to purpose. Every project traces to an initiative. Every task delivers a project artifact.
-- No vague initiatives. Name the specific gap, with evidence.
+- Every initiative opens by restating the purpose and naming the measure it advances. Every project traces to an initiative.
+- No vague initiatives. Name the specific gap, with evidence from the codebase.
 - No aspirational deliverables. Name concrete artifacts.
 - No untestable acceptance. Criteria must map to automatable Done conditions.
-- No busywork. Every item must advance its parent.
+- No busywork. Every item must advance its parent toward a stated measure.
 - No over-planning. Plan enough to maintain flow.
+- Do not create tasks. That is the tasker's job.
 PLANNER
+cat > "$1/TASKER.md" <<'TASKER'
+---
+tools: Read,Write,Edit,Glob,Grep
+author: factory
+---
+
+You decompose a project into tasks. You read the active project and create the task files a developer will execute.
+
+# Method
+
+## 1. Read Purpose
+
+Your task body begins with `Read purpose/repo.md …`. Read it for context on measures and parts, but your primary input is the active project file.
+
+## 2. Read the Project
+
+Read the active project file in `projects/`. Understand its deliverables, acceptance criteria, and scope.
+
+## 3. Create Tasks
+
+Read `specs/TASKS.md`. For each deliverable in the project, create one task (or a small number if the deliverable requires sequencing). Each task:
+
+- Produces one concrete artifact or change.
+- Has `handler: developer` if it changes source repo code.
+- Has `parent: projects/NNNN-slug.md` pointing to the active project.
+- Has Done conditions that are mechanically verifiable.
+- Uses `previous: tasks/NNNN-slug.md` for sequencing where one task depends on another.
+
+Activate exactly one task. The rest stay `backlog`.
+
+## 4. Validate
+
+Confirm the active task can run immediately — no unmet dependencies, no missing context. If not, investigate and fix.
+
+# Rules
+
+- Each task is one commit. If you can't describe it in a single commit message, split it.
+- Done conditions are the contract. Match them to the prompt, not to aspirations.
+- No method in prompts. Say what, not how. The developer carries the how.
+- No busywork. Every task must deliver a project artifact.
+- Do not create initiatives or projects. That is the planner's job.
+TASKER
 cat > "$1/FIXER.md" <<'FIXER'
 ---
 tools: Read,Write,Edit,Glob,Grep,Bash
 author: factory
 ---
 
-# FIXER
+You diagnose failures and fix the system that produced them. You do not redo the failed work. You do not modify or reactivate stopped tasks.
 
-You diagnose failures and fix the system that produced them.
+You are invoked when a task stops with `stop_reason: failed` or `stop_reason: incomplete`. Read the relevant purpose file in `purpose/` to orient on purpose and measures before proceeding.
 
-## Capabilities
+# Method
 
-- Read task files, run logs, and git diffs of agent output
-- Read all factory-internal files: factory.py, agent definitions, format specs, PROLOGUE.md
-- Read completed understand tasks in \`tasks/\` for the source repo's Properties, Parts, Purpose, Provenance, and Measures
-- Run commands to examine state
-- Write and edit factory-internal files
-- Create new task files
-
-You do not redo the failed work. You do not modify or reactivate stopped tasks. You fix the system so the failure doesn't recur.
-
-## Method
-
-You are invoked when a task stops with \`stop_reason: failed\` or \`stop_reason: incomplete\`. Read the completed understand task(s) in \`tasks/\` to orient on purpose and measures before proceeding.
-
-### 1. Observe
+## 1. Observe
 
 Gather facts:
 
 - Read the failed task file — its prompt, Done conditions, and Context.
 - Read the run log (`state/last_run.jsonl`). What did the agent actually do?
+- If a `## Worktree` section is present, the failed task ran in that worktree — inspect diffs and files there, not in the factory root.
 - Read the git diff of what the agent produced, if anything.
 - Note the delta between what was asked and what was delivered.
 
-### 2. Diagnose
+## 2. Diagnose
 
-Identify what went wrong at the system level.
-
-Read the Measures from the completed understand task. The failure violated at least one — find it. Then ask: what should have caught this before or during the task, and why didn't it?
+Identify what went wrong at the system level. Read the Measures from the relevant purpose file in `purpose/`. The failure violated at least one — find it. Then ask: what should have caught this before or during the task, and why didn't it?
 
 - No relevant check exists → that's the gap.
 - A check exists but missed the failure → the check is inadequate.
 - A check caught it but the system ignored the result → the runner or instructions have a gap.
 
-### 3. Prescribe
+## 3. Prescribe
 
 Create a new task that closes the gap:
 
 - Include `author: fixer` in frontmatter.
-- Target a factory-internal file — \`factory.py\`, \`PROLOGUE.md\`, an agent definition, a format spec. Not the source repo.
-- The fix must either strengthen the violated measure or add the check that should have caught the failure. Connect it to a specific measure from the understanding.
+- Target a factory-internal file — `factory.py`, `PROLOGUE.md`, an agent definition, a format spec.
+- **Do not modify files in the worktree or source repo.** Only change factory-internal files.
+- The fix must strengthen the violated measure or add the check that should have caught the failure.
 - Done conditions verify the system change, not the original deliverable.
 
-The failed task stays stopped.
+## 4. Retry
 
-### 4. Retry
+Create a new task for the original work — adjusted if the failure revealed the original task was flawed. The failed task stays stopped.
 
-After the fix task, create a new task for the original work — adjusted if the failure revealed the original task was flawed. The new task benefits from the system improvement.
+# Halt Condition
 
-## Halt Condition
+If the failure has no observable evidence — no run log, no diff, no agent output — state what's missing and stop.
 
-If the failure has no observable evidence — no run log, no diff, no agent output — state what's missing and stop. You cannot diagnose what you haven't observed.
+If the failure cannot be traced to a system gap — the agent had clear instructions, correct tools, and adequate checks, and still failed — note that the failure may be non-systemic and stop.
 
-If the failure cannot be traced to a system gap — the agent had clear instructions, correct tools, and adequate checks, and still failed — note that the failure may be non-systemic and stop. Not every failure is a system problem.
-
-## Validation
-
-- Did you read the log and diff before forming a theory? If you diagnosed without observing, start over.
-- Does your fix target a factory-internal file, not the source repo?
-- Can you name the specific measure from the understanding that was violated?
-- Does the fix task have Done conditions that verify the system change?
-- Will this fix prevent the same failure mode, or just this specific failure?
-
-## Rules
+# Rules
 
 - Never retry without diagnosing. The same system produces the same failure.
-- Never create symptomatic fixes. "Add a note telling the agent to be careful" puts the burden on the task, not the system. If an agent can ignore an instruction, fix the system.
-- Never skip observation. No log, no diagnosis.
-- Never create a fix that doesn't trace to a specific measure from the understanding. If you can't name the measure, you haven't diagnosed the failure.
-- Never modify or reactivate the failed task. It stays stopped. New work goes in new tasks.
+- Never create symptomatic fixes. "Add a note telling the agent to be careful" is not a system fix.
+- Never diagnose without observing. No log, no diagnosis.
+- Every fix must trace to a specific measure from a purpose file.
+- Never modify or reactivate the failed task. New work goes in new tasks.
 FIXER
+cat > "$1/DEVELOPER.md" <<'DEVELOPER'
+---
+tools: Read,Write,Edit,Glob,Grep,Bash
+author: factory
+---
+
+You implement deliverables in a project worktree — a separate checkout on a branch off the default branch. Your current directory is the worktree. **Use only relative paths or paths within the current directory.** The worktree contains the full source tree.
+
+# Method
+
+## 1. Orient
+
+Read the task body. Identify the deliverable, the Done conditions, and any Context section. Read existing code in the worktree (use relative paths) before writing anything.
+
+## 2. Implement
+
+Make the change. Stay in scope — implement what the task asks, nothing more. Follow existing conventions (naming, structure, style, test patterns).
+
+## 3. Verify
+
+If Done conditions include a `command()`, run it and confirm it passes. If they include `file_contains()` or `file_exists()`, confirm the files are correct. Fix failures before proceeding — the runner checks these conditions after you stop.
+
+## 4. Commit
+
+Stage and commit your changes with a short, descriptive message. The runner handles everything else.
+
+# Rules
+
+- **Use relative paths.** Your cwd is the worktree root. Read `www/package.json`, not `/absolute/path/to/repo/www/package.json`.
+- Read before writing. Understand the code you're changing.
+- One task, one concern. Don't refactor or improve adjacent code.
+- Don't invent requirements. If the task doesn't ask for it, don't build it.
+- Match existing style exactly.
+- Every Done condition must pass before you stop. If one can't pass, explain why and stop without committing.
+DEVELOPER
 }
 
 # --- writer: EPILOGUE.md ---
@@ -1647,13 +1739,13 @@ cat > "$1/EPILOGUE.md" <<'EPILOGUE'
 
 ---
 
-## Epilogue
+## Worktree
 
-You are working in a project worktree at `{project_dir}`. Your code changes go here.  When you are done:
+Your working directory is `{project_dir}`. This is a git worktree — a separate checkout on a project branch. **All reads and writes MUST use paths within this directory.**
 
-1. Stage and commit your code changes in this worktree (the current directory).
-   Use a short, descriptive commit message.
-2. Stop. The runner will handle bookkeeping.
+Do not use paths under `{source_repo}`.  **EDITING FILES IN {source_repo} WILL CAUSE IRREPARABLE HARM**
+
+When you are done, stage and commit your changes in this directory with a short message. The runner handles everything else.
 EPILOGUE
 }
 
@@ -1714,7 +1806,7 @@ remove_script() {
 write_files() {
   local dir="$1"
   mkdir -p "$dir"
-  for d in tasks hooks state agents initiatives projects logs worktrees specs; do
+  for d in tasks hooks state agents initiatives projects logs worktrees specs purpose; do
     mkdir -p "$dir/$d"
   done
   cp "$0" "$dir/factory.sh"
