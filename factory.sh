@@ -46,7 +46,6 @@ STATE_DIR = ROOT / "state"
 PARENT_REPO = ROOT.parent
 DEFAULT_TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
 
-
 def parse_frontmatter(text):
     """Split text into (meta_dict, body_string) or None if invalid."""
     if not text.startswith("---"):
@@ -62,7 +61,6 @@ def parse_frontmatter(text):
             meta[key.strip()] = val.strip()
     return meta, body
 
-
 def _task_line(t):
     """Format one task as a list item with parent and stop_reason."""
     parts = [t["name"]]
@@ -71,7 +69,6 @@ def _task_line(t):
     if sr := t.get("stop_reason"):
         parts.append(f"[stop_reason: {sr}]")
     return "- " + " ".join(parts)
-
 
 def active_items(dirname, heading):
     """Scan a directory for active items, return (markdown section, count)."""
@@ -88,7 +85,6 @@ def active_items(dirname, heading):
     if not count:
         return f"## {heading}\n\nNone active.\n", 0
     return "\n".join(lines), count
-
 
 def summarize_queue(tasks):
     """Build a markdown summary of the task queue."""
@@ -113,12 +109,17 @@ def summarize_queue(tasks):
             lines.append("")
     return "\n".join(lines)
 
-
 def purpose_of(entity):
-    """Return the relative path to the purpose file for an entity, or None if it doesn't exist."""
-    path = ROOT / "purpose" / f"{entity}.md"
+    """Return the relative path to the purpose file, or None if it doesn't exist.
+    For 'repo', checks PURPOSE.md in the factory root.
+    For anything else, checks PURPOSE.md in the project worktree."""
+    if entity == "repo":
+        path = ROOT / "PURPOSE.md"
+        return str(path.relative_to(ROOT)) if path.exists() else None
+    # project purpose lives in the worktree
+    slug = entity.replace("/", "-")
+    path = ROOT / "worktrees" / slug / "PURPOSE.md"
     return str(path.relative_to(ROOT)) if path.exists() else None
-
 
 def triage(task, details, work_dir=None):
     """Collect failed task, condition results, log tail for the fixer."""
@@ -184,13 +185,11 @@ def parse_task(path):
         "_path": path,
     }
 
-
 def load_tasks():
     """Load all tasks from tasks/ directory, sorted by filename."""
     if not TASKS_DIR.exists():
         return []
     return [t for f in sorted(TASKS_DIR.glob("*.md")) if (t := parse_task(f))]
-
 
 def update_task_meta(task, **kwargs):
     """Update YAML frontmatter fields in a task file."""
@@ -211,7 +210,6 @@ def update_task_meta(task, **kwargs):
             lines.append(f"{key}: {val}")
     path.write_text("---\n" + "\n".join(lines) + "\n---" + body)
 
-
 def next_id(directory):
     """Return the next monotonic ID for a directory of NNNN-slug.md files."""
     nums = [int(m.group(1)) for f in directory.glob("*.md")
@@ -225,7 +223,6 @@ def _glob_matches(base, pat):
     if any(ch in pat for ch in "*?[]"):
         return any(base.glob(pat))
     return (base / pat).exists()
-
 
 def check_one_condition(cond, target_dir=None):
     """Evaluate a single completion condition string."""
@@ -268,13 +265,11 @@ def check_one_condition(cond, target_dir=None):
             return False
     return False
 
-
 def check_done(done, target_dir=None):
     """Check if all completion conditions pass. No conditions = always done."""
     if not done:
         return True
     return all(check_one_condition(c, target_dir) for c in done)
-
 
 def check_done_details(done, target_dir=None):
     """Check conditions and return (passed, [(cond, bool), ...])."""
@@ -302,17 +297,25 @@ def next_task(tasks=None):
         return t
     return None
 
+# --- item path helpers ---
 
-# --- project helpers ---
+def item_slug(path):
+    """Extract slug from NNNN-slug.md -> slug."""
+    return re.sub(r"^\d+-", "", Path(path).stem)
 
-def project_slug(project_path):
-    """Extract slug from projects/NNNN-slug.md -> slug."""
-    return re.sub(r"^\d+-", "", Path(project_path).stem)
-
-
-def project_branch_name(project_path):
-    return f"factory/{project_slug(project_path)}"
-
+def item_path(item):
+    """Walk parent chain → 'initiative-slug/project-slug/...'. Used for branch and worktree paths."""
+    parts = []
+    path = item
+    while path:
+        parts.append(item_slug(path))
+        p = ROOT / path
+        if not p.exists():
+            break
+        parsed = parse_frontmatter(p.read_text())
+        path = parsed[0].get("parent", "") if parsed else ""
+    parts.reverse()
+    return "/".join(parts)
 
 def read_md(name):
     """Read a markdown file from ROOT, or return empty string if missing."""
@@ -326,7 +329,7 @@ from library import (
     ROOT, TASKS_DIR, STATE_DIR, PARENT_REPO, DEFAULT_TOOLS,
     parse_frontmatter, load_tasks, update_task_meta, next_id,
     check_done, check_done_details, next_task,
-    project_slug, project_branch_name, read_md,
+    item_slug, item_path, read_md,
     active_items, summarize_queue, purpose_of, triage,
 )
 
@@ -355,38 +358,41 @@ def _provider_cli():
     log(f"  ✗ \033[31mno provider CLI found (check config.json)\033[0m")
     return None
 
-def ensure_project_worktree(project_path):
-    """Create project branch and worktree if needed."""
-    slug = project_slug(project_path)
-    branch = project_branch_name(project_path)
-    wt_dir = ROOT / "worktrees" / slug
+def _git(*args, cwd=ROOT):
+    """Run a git command, return stripped stdout."""
+    return subprocess.check_output(["git"] + list(args), cwd=cwd, stderr=subprocess.STDOUT).decode().strip()
+
+def worktree_for(item):
+    """Ensure branches and worktree exist for an item. Returns worktree path."""
+    rel = item_path(item)
+    segments = rel.split("/")
+    branch = f"factory/{rel}"
+    wt_dir = ROOT / "worktrees" / rel
     default_branch = _load_config().get("default_branch", "main")
 
-    def _git(*args):
-        return subprocess.check_output(
-            ["git"] + list(args), cwd=PARENT_REPO, stderr=subprocess.STDOUT
-        ).decode().strip()
-
-    # ensure branch exists
-    try:
-        _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
-    except subprocess.CalledProcessError:
-        _git("branch", branch, default_branch)
+    # ensure each ancestor branch exists
+    for i in range(len(segments)):
+        name = "factory/" + "/".join(segments[:i+1])
+        parent = ("factory/" + "/".join(segments[:i])) if i > 0 else default_branch
+        try:
+            _git("show-ref", "--verify", "--quiet", f"refs/heads/{name}", cwd=PARENT_REPO)
+        except subprocess.CalledProcessError:
+            _git("branch", name, parent, cwd=PARENT_REPO)
 
     # if dir exists but isn't a registered worktree, nuke it
     if wt_dir.exists():
-        wt_list = _git("worktree", "list", "--porcelain")
+        wt_list = _git("worktree", "list", "--porcelain", cwd=PARENT_REPO)
         if str(wt_dir.resolve()) not in wt_list:
             shutil.rmtree(wt_dir, ignore_errors=True)
-            _git("worktree", "prune")
+            _git("worktree", "prune", cwd=PARENT_REPO)
 
     # create worktree if needed
     if not wt_dir.exists():
         wt_dir.parent.mkdir(parents=True, exist_ok=True)
-        _git("worktree", "add", str(wt_dir), branch)
-        base_hash = _git("rev-parse", "--short", branch)
+        _git("worktree", "add", str(wt_dir), branch, cwd=PARENT_REPO)
+        base_hash = _git("rev-parse", "--short", branch, cwd=PARENT_REPO)
         log(f"\033[33m⚙ factory\033[0m created workstream")
-        log(f"  → branch: \033[2m{branch}\033[0m\n  → worktree: \033[2m{slug}\033[0m\n  → base: \033[2m{default_branch}@{base_hash}\033[0m\n")
+        log(f"  → branch: \033[2m{branch}\033[0m\n  → worktree: \033[2m{rel}\033[0m\n  → base: \033[2m{default_branch}@{base_hash}\033[0m\n")
 
     return wt_dir
 
@@ -414,8 +420,6 @@ def log(msg):
         _run_log_file.write(_ansi_regex.sub("", msg) + "\n")
         _run_log_file.flush()
 
-def sh(*cmd):
-    return subprocess.check_output(cmd, cwd=ROOT, stderr=subprocess.STDOUT).decode().strip()
 
 def _acquire_pid():
     """Write pid file, returning False if another instance is running."""
@@ -486,8 +490,8 @@ def write_task(slug, body, handler=None, tools=None, previous=None):
     if previous:
         fm.append(f"previous: {previous}")
     path.write_text("---\n" + "\n".join(fm) + "\n---\n\n" + body)
-    sh("git", "add", str(path.relative_to(ROOT)))
-    sh("git", "commit", "-m", f"New Task: {name}")
+    _git("add", str(path.relative_to(ROOT)))
+    _git("commit", "-m", f"New Task: {name}")
     return name
 
 
@@ -844,26 +848,21 @@ def run():
         the agent created files like initiatives/, projects/, tasks/)."""
         if stage_all:
             try:
-                if sh("git", "status", "--porcelain"):
-                    sh("git", "add", "-A")
+                if _git("status", "--porcelain"):
+                    _git("add", "-A")
             except Exception:
                 pass
         rel = task["_path"].relative_to(ROOT)
-        sh("git", "add", str(rel))
-        sh("git", "commit", "-m", message)
+        _git("add", str(rel))
+        _git("commit", "-m", message)
 
     def git_head(cwd):
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=cwd, stderr=subprocess.STDOUT
-        ).decode().strip()
+        return _git("rev-parse", "HEAD", cwd=cwd)
 
     def git_log_subjects(cwd, old, new):
         """Return commit subjects between old..new, or [] on error."""
         try:
-            return subprocess.check_output(
-                ["git", "log", "--format=%s", f"{old}..{new}"],
-                cwd=cwd, stderr=subprocess.STDOUT
-            ).decode().strip().splitlines()
+            return _git("log", "--format=%s", f"{old}..{new}", cwd=cwd).splitlines()
         except subprocess.CalledProcessError:
             return []
 
@@ -883,22 +882,21 @@ def run():
 
             if not has_purpose:
                 task_name = f"understand-{PARENT_REPO.name}"
-                prompt = f"Understand the purpose of the source repository `{PARENT_REPO}` and write it in `purpose/repo.md`"
+                prompt = f"Understand the purpose of the source repository `{PARENT_REPO}` and write it in `PURPOSE.md`"
                 write_task(task_name, prompt, handler="thinker", tools="Read,Glob,Grep,Write")
             elif prj_active == 0:
                 queue = summarize_queue(all_tasks)
                 ini_section, _ = active_items("initiatives", "Active Initiatives")
-                prompt = f"Read `purpose/repo.md`.\n\n{queue}\n{ini_section}\n"
+                prompt = f"Read `PURPOSE.md`.\n\n{queue}\n{ini_section}\n"
                 write_task("roadmap", prompt, handler="planner", tools="Read,Write,Edit,Glob,Grep")
             else:
                 queue = summarize_queue(all_tasks)
-                prompt = f"Read `purpose/repo.md`.\n\n{queue}\n{prj_section}\n"
+                prompt = f"Read `PURPOSE.md`.\n\n{queue}\n{prj_section}\n"
                 write_task("decompose", prompt, handler="tasker", tools="Read,Write,Edit,Glob,Grep")
             continue
 
         name = task["name"]
-        is_project_task = task["parent"].startswith("projects/")
-        work_dir = ensure_project_worktree(task["parent"]) if is_project_task else ROOT
+        work_dir = worktree_for(task["parent"]) if task["parent"] else ROOT
 
         log(f"\033[32mtask\033[0m started: {name}")
 
@@ -909,7 +907,7 @@ def run():
         # build prompt
         prologue = read_md("PROLOGUE.md") or ""
         body = task["prompt"] or ""
-        epilogue = read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)).replace("{source_repo}", str(PARENT_REPO)) if is_project_task else ""
+        epilogue = read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)).replace("{source_repo}", str(PARENT_REPO)) if work_dir != ROOT else ""
         prompt = "\n\n".join(p for p in [prologue, body, epilogue] if p)
 
         agent_def = None
@@ -941,16 +939,25 @@ def run():
         duration = f"{duration_ms/1000:.1f}s" if duration_ms else None
         cost = f"${cost_usd:.4f}" if cost_usd else None
 
+        # worktree tasks: commit any uncommitted changes the agent left behind
+        if work_dir != ROOT:
+            try:
+                if _git("status", "--porcelain", cwd=work_dir):
+                    _git("add", "-A", cwd=work_dir)
+                    _git("commit", "-m", f"WIP: {name}", cwd=work_dir)
+            except Exception:
+                pass
+
         head_after = git_head(work_dir)
         agent_committed = head_before != head_after
 
         # --- agent crashed ---
         if not ok:
-            if is_project_task:
+            if work_dir != ROOT:
                 # revert uncommitted changes in the worktree
                 try:
-                    subprocess.check_output(["git", "checkout", "--", "."], cwd=work_dir, stderr=subprocess.STDOUT)
-                    subprocess.check_output(["git", "clean", "-fd"], cwd=work_dir, stderr=subprocess.STDOUT)
+                    _git("checkout", "--", ".", cwd=work_dir)
+                    _git("clean", "-fd", cwd=work_dir)
                 except Exception:
                     pass
             update_task_meta(task, status="stopped", stop_reason="failed", duration=duration, cost=cost)
@@ -969,10 +976,8 @@ def run():
         summary_lines = git_log_subjects(work_dir, head_before, head_after) if agent_committed else []
 
         # factory tasks: squash agent commits so the whole task is one commit
-        if agent_committed and not is_project_task:
-            subprocess.check_output(
-                ["git", "reset", "--soft", head_before], cwd=work_dir, stderr=subprocess.STDOUT
-            )
+        if agent_committed and work_dir == ROOT:
+            _git("reset", "--soft", head_before, cwd=work_dir)
 
         # check completion conditions
         passed, details = check_done_details(task["done"], target_dir=work_dir)
@@ -983,7 +988,7 @@ def run():
         else:
             update_task_meta(task, status="stopped", stop_reason="incomplete", duration=duration, cost=cost)
         label = "Complete" if passed else "Incomplete"
-        commit_factory(task, f"{label} Task: {name}", stage_all=not is_project_task)
+        commit_factory(task, f"{label} Task: {name}", stage_all=work_dir == ROOT)
 
         # log result
         info = _format_result(result)
@@ -1172,11 +1177,11 @@ Very briefly re-interpret the **purpose** and outline an initiative that advance
 
 How this initiative connects to the purpose. Orientation for every downstream agent.
 
-- Restate the purpose in one sentence (the concise bolded statement from `purpose/repo.md`).
+- Restate the purpose in one sentence (the concise bolded statement from `PURPOSE.md`).
 - Name the specific measure this initiative advances.
 - Explain how closing this gap moves that measure.
 
-The purpose file is the canonical source of measures. The initiative's job is to connect to a measure, not redefine one.
+`PURPOSE.md` is the canonical source of measures. The initiative's job is to connect to a measure, not redefine one.
 
 ### Problem
 
@@ -1212,7 +1217,7 @@ How you know the initiative is making progress. Break the outcome into parts tha
 
 - **Solutions.** An initiative names the problem and the desired end state. It does not prescribe how to get there. That's what projects are for.
 - **Vague problems.** "Code quality could be better" is not a problem. Name the specific gap with evidence from the source repo.
-- **Disconnected outcomes.** If the intro paragraph can't name a specific measure from the purpose file, the initiative isn't grounded.
+- **Disconnected outcomes.** If the intro paragraph can't name a specific measure from `PURPOSE.md`, the initiative isn't grounded.
 - **Unmeasurable outcomes.** If you cannot break the outcome into observable parts in the Measures section, the outcome is aspirational, not real.
 - **Work that is really a project.** If the problem can be solved by one scoped deliverable, it's a project under an existing initiative, not a new initiative.
 - **Multiple problems.** One initiative, one problem. If the Problem section has two distinct threads, split them.
@@ -1274,7 +1279,7 @@ How this project advances the parent initiative.
 How this project advances the parent initiative. Orientation for the agent creating tasks.
 
 - What slice of the initiative's problem space it addresses.
-- Which constituent part from the purpose file it addresses and what purpose it serves.
+- Which constituent part from `PURPOSE.md` it addresses and what purpose it serves.
 - How it relates to sibling parts or projects, if any exist.
 
 ### Deliverables
@@ -1291,7 +1296,7 @@ Testable criteria, one per deliverable. Each answers "how do I verify this deliv
 
 - Must map to automatable Done conditions (the same condition types tasks use: `file_exists`, `file_contains`, `command`, etc.).
 - No human judgment. "Code is cleaner" is not checkable. "Linter passes with zero warnings" is.
-- Connect to Measures from the purpose file.
+- Connect to Measures from `PURPOSE.md`.
 
 ### Scope
 
@@ -1383,7 +1388,7 @@ The prompt is a mandate. The agent must do what it says, fully, or halt.
 
 Why this task exists. Orientation, not instruction.
 
-- Trace to a purpose, a measure, or a parent project.
+- Trace to `PURPOSE.md`, a measure, or a parent project.
 - The agent reads this to understand why the work matters.
 - **Not additional instructions.** If you're putting procedural steps or extra requirements in Context, they belong in the prompt. Agents are trained to read Context for orientation, not to execute it.
 
@@ -1483,7 +1488,7 @@ For each measure:
 
 ## 4. Write purpose file
 
-Write your output to `purpose/{scope}.md` where `{scope}` is the slug from your task (e.g. `purpose/repo.md`).
+Write your output to `PURPOSE.md`. For the repo scope, this is `PURPOSE.md` in the factory root. For a project scope, this is `PURPOSE.md` in the project's worktree.
 
 Structure the file as:
 
@@ -1539,7 +1544,7 @@ You do not create tasks — the tasker handles that.
 
 ## 1. Read Purpose
 
-Your task body begins with `Read purpose/repo.md …`. Read it first. It defines:
+Your task body begins with `Read PURPOSE.md …`. Read it first. It defines:
 
 - **Purpose** — what the repo exists to do
 - **Measures** — how you know it's working
@@ -1567,6 +1572,7 @@ If there is no active initiative, continue to step 4.
 
 Read `specs/INITIATIVES.md`. Find the highest-leverage gap between the current state and the purpose. Before writing the Problem, write the intro paragraph: restating the purpose in one sentence, naming the measure this initiative advances and explaining how closing this gap moves that measure. Create 1–3 backlog initiatives. Activate exactly one. Continue to step 5.
 
+
 ## 5. Decompose into Projects
 
 Read `specs/PROJECTS.md`. Take the active initiative and check what projects already exist. For each unmet part of the initiative's outcome, create a project. Do not recreate projects that already completed successfully.
@@ -1579,7 +1585,7 @@ Confirm at least one project is `active` and ready for the tasker. If not, inves
 
 # Rules
 
-- Every initiative opens by restating the purpose and naming the measure it advances. Every project traces to an initiative.
+- Every initiative opens by restating the purpose and naming the measure it advances (`PURPOSE.md` is the canonical source). Every project traces to an initiative.
 - No vague initiatives. Name the specific gap, with evidence from the codebase.
 - No aspirational deliverables. Name concrete artifacts.
 - No untestable acceptance. Criteria must map to automatable Done conditions.
@@ -1599,7 +1605,7 @@ You own an active project. Your job is to decide: is this project done? If not, 
 
 ## 1. Read Purpose
 
-Your task body begins with `Read purpose/repo.md …`. Read it for context on measures and parts, but your primary input is the active project file.
+Your task body begins with `Read PURPOSE.md …`. Read it for context on measures and parts, but your primary input is the active project file.
 
 ## 2. Read the Project
 
@@ -1652,7 +1658,7 @@ author: factory
 
 You diagnose failures and fix the system that produced them. You do not redo the failed work. You do not modify or reactivate stopped tasks.
 
-You are invoked when a task stops with `stop_reason: failed` or `stop_reason: incomplete`. Read the relevant purpose file in `purpose/` to orient on purpose and measures before proceeding.
+You are invoked when a task stops with `stop_reason: failed` or `stop_reason: incomplete`. Read the relevant spec files in `specs/` and agent definitions in `agents/` to orient on expected behavior before proceeding.
 
 # Method
 
@@ -1668,7 +1674,7 @@ Gather facts:
 
 ## 2. Diagnose
 
-Identify what went wrong at the system level. Read the Measures from the relevant purpose file in `purpose/`. The failure violated at least one — find it. Then ask: what should have caught this before or during the task, and why didn't it?
+Identify what went wrong at the system level. Read the spec for the failed task's type (e.g. `specs/TASKS.md`, the handler's agent definition). The failure violated a contract or convention — find it. Then ask: what should have caught this before or during the task, and why didn't it?
 
 - No relevant check exists → that's the gap.
 - A check exists but missed the failure → the check is inadequate.
@@ -1699,7 +1705,7 @@ If the failure cannot be traced to a system gap — the agent had clear instruct
 - Never retry without diagnosing. The same system produces the same failure.
 - Never create symptomatic fixes. "Add a note telling the agent to be careful" is not a system fix.
 - Never diagnose without observing. No log, no diagnosis.
-- Every fix must trace to a specific measure from a purpose file.
+- Every fix must trace to a specific contract from a spec or agent definition.
 - Never modify or reactivate the failed task. New work goes in new tasks.
 FIXER
 cat > "$1/DEVELOPER.md" <<'DEVELOPER'
@@ -1724,10 +1730,6 @@ Make the change. Stay in scope — implement what the task asks, nothing more. F
 
 If Done conditions include a `command()`, run it and confirm it passes. If they include `file_contains()` or `file_exists()`, confirm the files are correct. Fix failures before proceeding — the runner checks these conditions after you stop.
 
-## 4. Commit
-
-Stage and commit your changes with a short, descriptive message. The runner handles everything else.
-
 # Rules
 
 - **Use relative paths.** Your cwd is the worktree root. Read `www/package.json`, not `/absolute/path/to/repo/www/package.json`.
@@ -1735,7 +1737,7 @@ Stage and commit your changes with a short, descriptive message. The runner hand
 - One task, one concern. Don't refactor or improve adjacent code.
 - Don't invent requirements. If the task doesn't ask for it, don't build it.
 - Match existing style exactly.
-- Every Done condition must pass before you stop. If one can't pass, explain why and stop without committing.
+- Every Done condition must pass before you stop. If one can't pass, explain why and stop.
 DEVELOPER
 }
 
@@ -1750,8 +1752,6 @@ cat > "$1/EPILOGUE.md" <<'EPILOGUE'
 Your working directory is `{project_dir}`. This is a git worktree — a separate checkout on a project branch. **All reads and writes MUST use paths within this directory.**
 
 Do not use paths under `{source_repo}`.  **EDITING FILES IN {source_repo} WILL CAUSE IRREPARABLE HARM**
-
-When you are done, stage and commit your changes in this directory with a short message. The runner handles everything else.
 EPILOGUE
 }
 
@@ -1812,7 +1812,7 @@ remove_script() {
 write_files() {
   local dir="$1"
   mkdir -p "$dir"
-  for d in tasks hooks state agents initiatives projects logs worktrees specs purpose; do
+  for d in tasks hooks state agents initiatives projects logs worktrees specs; do
     mkdir -p "$dir/$d"
   done
   cp "$0" "$dir/factory.sh"
