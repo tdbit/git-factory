@@ -163,14 +163,9 @@ def parse_task(path):
         if in_done and re.match(r'^##\s+', line):
             in_done = False
         if in_done:
-            stripped = line.strip().lstrip("- ")
-            m = re.match(r'`([^`]+)`', stripped)
+            m = re.match(r'\s*-?\s*`?(\w+\(.*\))`?', line) or re.match(r'\s*-?\s*`?(never)`?', line)
             if m:
                 done_lines.append(m.group(1))
-            elif stripped and re.match(r'(\w+)\(', stripped):
-                done_lines.append(stripped)
-            elif stripped == "never":
-                done_lines.append("never")
     return {
         "name": path.stem,
         "tools": meta.get("tools", DEFAULT_TOOLS),
@@ -517,150 +512,92 @@ def _dump_debug(label, stderr_lines, stdout_garbage):
             print(line)
         log(f"--- end ---")
 
+def _run_subprocess(cmd, cwd, run_log, on_event, timeout=None):
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, start_new_session=True, cwd=cwd)
+    stderr_lines, stdout_garbage = [], []
+    start = time.monotonic()
+    last_output = [start]
+    def _read_stdout():
+        for raw in iter(proc.stdout.readline, b""):
+            last_output[0] = time.monotonic()
+            text = raw.decode(errors="replace").strip()
+            if not text: continue
+            if run_log:
+                run_log.write(text + "\n"); run_log.flush()
+            try: ev = json.loads(text)
+            except ValueError: stdout_garbage.append(text); continue
+            on_event(ev)
+    def _read_stderr():
+        for line in iter(proc.stderr.readline, b""):
+            last_output[0] = time.monotonic()
+            if line: stderr_lines.append(line)
+    t_out = threading.Thread(target=_read_stdout, daemon=True)
+    t_err = threading.Thread(target=_read_stderr, daemon=True)
+    t_out.start(); t_err.start()
+    hb_sec = float(os.environ.get("FACTORY_HEARTBEAT_SEC", "15"))
+    deadline = start + timeout if timeout else None
+    last_seen, next_hb = start, start + hb_sec
+    while proc.poll() is None:
+        if last_output[0] != last_seen:
+            last_seen = last_output[0]; next_hb = last_seen + hb_sec
+        now = time.monotonic()
+        if deadline and now >= deadline:
+            _kill_proc(proc, f"exceeded {timeout:.0f}s timeout")
+            break
+        if now >= next_hb:
+            log(f"still working… {int(now - start)}s"); next_hb = now + hb_sec
+        time.sleep(0.2)
+    t_out.join(timeout=1); t_err.join(timeout=1)
+    return proc.returncode, stderr_lines, stdout_garbage
+
 def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which("codex")
     if not cli_path:
-        log(f"\033[33m⚙ factory\033[0m shutting down")
-        log(f"  ✗ \033[31mcodex CLI not found on PATH\033[0m")
+        log(f"\033[33m⚙ factory\033[0m shutting down\n  ✗ \033[31mcodex CLI not found on PATH\033[0m")
         return False, None
-    work_dir = cwd or ROOT
-
     if agent and agent.get("prompt"):
-        full_prompt = f"{agent['prompt']}\n\n---\n\n{prompt}"
+        prompt = f"{agent['prompt']}\n\n---\n\n{prompt}"
         allowed_tools = agent.get("tools") or allowed_tools
-    else:
-        full_prompt = prompt
+    requested = os.environ.get("FACTORY_CODEX_MODEL", "").strip()
+    fallbacks = [m.strip() for m in os.environ.get("FACTORY_CODEX_MODEL_FALLBACKS", "gpt-5-codex,o3").split(",") if m.strip()]
+    candidates = [requested or "gpt-5.2-codex"] + [m for m in fallbacks if m != (requested or "gpt-5.2-codex")]
 
-    requested_model = os.environ.get("FACTORY_CODEX_MODEL", "").strip()
-    fallback_models = [
-        m.strip() for m in os.environ.get("FACTORY_CODEX_MODEL_FALLBACKS", "gpt-5-codex,o3").split(",")
-        if m.strip()
-    ]
-    model_candidates = []
-    if requested_model:
-        model_candidates.append(requested_model)
-    else:
-        model_candidates.append("gpt-5.2-codex")
-    for m in fallback_models:
-        if m not in model_candidates:
-            model_candidates.append(m)
+    def on_event(ev):
+        etype = ev.get("type")
+        item = ev.get("item") or {}
+        cmd_val = item.get("command") or ""
+        if cmd_val:
+            first = cmd_val.splitlines()[0]
+            if cmd_val != first: item["command"] = first + " …"
+        if etype == "message":
+            msg = ev.get("content") or ev.get("text") or ""
+            if msg: print(msg, end="")
+        elif etype == "item.started":
+            cmd = item.get("command") or ""
+            if cmd: _show_progress(f"\033[36m  → run:\033[0m \033[2m{cmd}\033[0m")
+        elif etype == "item.completed":
+            cmd, out, ec = item.get("command", ""), item.get("aggregated_output", ""), item.get("exit_code")
+            if cmd:
+                pfx = "\033[36m✓ run\033[0m" if ec == 0 else "\033[31m✗ run\033[0m"
+                log(f"{pfx} \033[2m{cmd}\033[0m" + ("" if ec == 0 else f" (exit {ec})"))
+            if out and ec != 0: print(out, end="" if out.endswith("\n") else "\n")
+        elif "content" in ev and isinstance(ev["content"], str):
+            print(ev["content"], end="")
 
     last_stderr = b""
-    heartbeat_sec = float(os.environ.get("FACTORY_HEARTBEAT_SEC", "15"))
-    for model_name in model_candidates:
-        log(f"  → using: codex \033[2m({model_name})\033[0m")
-        proc = subprocess.Popen(
-            [cli_path, "exec", "--model", model_name, "--sandbox", "workspace-write", "--json", full_prompt],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=work_dir,
-        )
-        start = time.monotonic()
-        last_output = [start]
-        stderr_lines = []
-
-        stdout_garbage = []
-
-        def _handle_event(ev):
-            etype = ev.get("type")
-            item = ev.get("item") or {}
-            cmd_val = item.get("command") or ""
-            if cmd_val:
-                first = cmd_val.splitlines()[0]
-                if cmd_val != first:
-                    item["command"] = first + " …"
-            if etype == "message":
-                msg = ev.get("content") or ev.get("text") or ""
-                if msg:
-                    print(msg, end="")
-                return
-            if etype == "item.started":
-                cmd = item.get("command") or ""
-                if cmd:
-                    _show_progress(f"\033[36m  → run:\033[0m \033[2m{cmd}\033[0m")
-                return
-            if etype == "item.completed":
-                cmd = item.get("command") or ""
-                out = item.get("aggregated_output") or ""
-                exit_code = item.get("exit_code")
-                if cmd:
-                    prefix = "\033[36m✓ run\033[0m" if exit_code == 0 else "\033[31m✗ run\033[0m"
-                    suffix = "" if exit_code == 0 else f" (exit {exit_code})"
-                    log(f"{prefix} \033[2m{cmd}\033[0m{suffix}")
-                if out and exit_code != 0:
-                    print(out, end="" if out.endswith("\n") else "\n")
-                return
-            if "content" in ev and isinstance(ev["content"], str):
-                print(ev["content"], end="")
-
-        def _read_stdout():
-            for line in iter(proc.stdout.readline, b""):
-                last_output[0] = time.monotonic()
-                if line:
-                    text = line.decode(errors="replace").strip()
-                    if not text:
-                        continue
-                    if run_log:
-                        run_log.write(text + "\n")
-                        run_log.flush()
-                    try:
-                        ev = json.loads(text)
-                    except ValueError:
-                        stdout_garbage.append(text)
-                        continue
-                    _handle_event(ev)
-
-        def _read_stderr():
-            for line in iter(proc.stderr.readline, b""):
-                last_output[0] = time.monotonic()
-                if line:
-                    stderr_lines.append(line)
-
-        t_out = threading.Thread(target=_read_stdout, daemon=True)
-        t_err = threading.Thread(target=_read_stderr, daemon=True)
-        t_out.start()
-        t_err.start()
-
-        last_seen = last_output[0]
-        next_heartbeat = last_seen + heartbeat_sec
-        deadline = start + AGENT_TIMEOUT if AGENT_TIMEOUT else None
-        while proc.poll() is None:
-            if last_output[0] != last_seen:
-                last_seen = last_output[0]
-                next_heartbeat = last_seen + heartbeat_sec
-            now = time.monotonic()
-            if deadline and now >= deadline:
-                _kill_proc(proc, f"exceeded {AGENT_TIMEOUT:.0f}s timeout")
-                return False, None
-            if now >= next_heartbeat:
-                elapsed = int(now - start)
-                log(f"still working… {elapsed}s")
-                next_heartbeat = now + heartbeat_sec
-            time.sleep(0.2)
-
-        t_out.join(timeout=1)
-        t_err.join(timeout=1)
-
-        if proc.returncode == 0:
-            return True, None
-
-        last_stderr = b"".join(stderr_lines).strip() or b""
-        stderr_text = (last_stderr or b"").decode(errors="replace")
-        retryable = (
-            "does not exist or you do not have access" in stderr_text
-            or "model_not_found" in stderr_text
-            or "invalid model" in stderr_text.lower()
-        )
-        if retryable:
-            log(f"codex model unavailable: {model_name}, trying fallback")
-            continue
-
-        log(f"codex \033[31mfailed\033[0m with exit code {proc.returncode}")
-        _dump_debug("codex", [stderr_text] if stderr_text else [], stdout_garbage)
+    for model in candidates:
+        log(f"  → using: codex \033[2m({model})\033[0m")
+        cmd = [cli_path, "exec", "--model", model, "--sandbox", "workspace-write", "--json", prompt]
+        rc, stderr, garbage = _run_subprocess(cmd, cwd or ROOT, run_log, on_event, timeout=AGENT_TIMEOUT)
+        if rc == 0: return True, None
+        last_stderr = b"".join(stderr).strip()
+        stderr_text = last_stderr.decode(errors="replace")
+        if any(s in stderr_text.lower() for s in ("does not exist or you do not have access", "model_not_found", "invalid model")):
+            log(f"codex model unavailable: {model}, trying fallback"); continue
+        log(f"codex \033[31mfailed\033[0m with exit code {rc}")
+        _dump_debug("codex", [stderr_text] if stderr_text else [], garbage)
         return False, None
-
     log("codex \033[31mfailed\033[0m for all configured models")
     _dump_debug("codex", [last_stderr.decode(errors="replace")] if last_stderr else [], [])
     return False, None
@@ -668,106 +605,47 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
 def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cli_name=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which(cli_name or "claude")
     if not cli_path:
-        log(f"\033[33m⚙ factory\033[0m shutting down")
-        log(f"  ✗ \033[31mclaude CLI not found on PATH\033[0m")
+        log(f"\033[33m⚙ factory\033[0m shutting down\n  ✗ \033[31mclaude CLI not found on PATH\033[0m")
         return False, None
-    work_dir = cwd or ROOT
-
     system_args = []
     if agent and agent.get("prompt"):
         system_args = ["--system-prompt", agent["prompt"]]
         allowed_tools = agent.get("tools") or allowed_tools
-
-    model_name = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
+    model = os.environ.get("FACTORY_CLAUDE_MODEL", "claude-haiku-4-5-20251001").strip()
     max_turns = os.environ.get("FACTORY_MAX_TURNS", "32").strip()
-    model_arg = ["--model", model_name]
-    log(f"  → using: {cli_name or 'claude'} \033[2m({model_name})\033[0m")
-
-    proc = subprocess.Popen(
-        [cli_path, "--permission-mode", "bypassPermissions", "-p", "--verbose",
-         "--output-format", "stream-json",
-         "--max-turns", max_turns,
-         "--allowedTools", allowed_tools, *system_args, *model_arg, "--", prompt],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        cwd=work_dir,
-    )
+    log(f"  → using: {cli_name or 'claude'} \033[2m({model})\033[0m")
     result = None
-    stderr_output = []
-
-    def read_stderr():
-        for line in iter(proc.stderr.readline, b""):
-            line = line.decode().strip()
-            if line:
-                stderr_output.append(line)
-
-    stderr_reader = threading.Thread(target=read_stderr, daemon=True)
-    stderr_reader.start()
-    stdout_garbage = []
-    def read_stream():
+    def on_event(ev):
         nonlocal result
-        for raw in iter(proc.stdout.readline, b""):
-            raw = raw.strip()
-            if not raw:
-                continue
-            if run_log:
-                run_log.write(raw.decode(errors="replace") + "\n")
-                run_log.flush()
-            try:
-                ev = json.loads(raw)
-            except ValueError:
-                stdout_garbage.append(raw.decode(errors='replace'))
-                continue
-            t = ev.get("type", "")
-            if t == "assistant":
-                for block in ev.get("message", {}).get("content", []):
-                    if block.get("type") == "tool_use":
-                        name = block.get("name", "")
-                        if not name:
-                            continue
-                        inp = block.get("input", {})
-                        detail = ""
-                        if name in ("Read", "Write", "Edit"):
-                            fp = inp.get("file_path", "")
-                            if fp:
-                                detail = fp.rsplit("/", 1)[-1]
-                        elif name == "Glob":
-                            detail = inp.get("pattern", "")
-                        elif name == "Grep":
-                            detail = inp.get("pattern", "")
-                        elif name == "Bash":
-                            cmd = inp.get("command", "").splitlines()[0]
-                            maxw = shutil.get_terminal_size((80, 24)).columns - 22
-                            detail = cmd[:maxw] + ("…" if len(cmd) > maxw else "")
-                        lname = name.lower()
-                        _show_progress(f"\033[36m  → {lname}{': ' + detail if detail else ''}\033[0m")
-            elif t == "result":
-                result = ev
-    reader = threading.Thread(target=read_stream, daemon=True)
-    reader.start()
-    start = time.monotonic()
-    deadline = start + AGENT_TIMEOUT if AGENT_TIMEOUT else None
+        t = ev.get("type", "")
+        if t == "assistant":
+            for block in ev.get("message", {}).get("content", []):
+                if block.get("type") != "tool_use": continue
+                name = block.get("name", "")
+                if not name: continue
+                inp = block.get("input", {})
+                if name in ("Read", "Write", "Edit"):
+                    detail = (inp.get("file_path") or "").rsplit("/", 1)[-1]
+                elif name in ("Glob", "Grep"):
+                    detail = inp.get("pattern", "")
+                elif name == "Bash":
+                    cmd = inp.get("command", "").splitlines()[0]
+                    maxw = shutil.get_terminal_size((80, 24)).columns - 22
+                    detail = cmd[:maxw] + ("…" if len(cmd) > maxw else "")
+                else: detail = ""
+                _show_progress(f"\033[36m  → {name.lower()}{': ' + detail if detail else ''}\033[0m")
+        elif t == "result": result = ev
+    cmd = [cli_path, "--permission-mode", "bypassPermissions", "-p", "--verbose",
+           "--output-format", "stream-json", "--max-turns", max_turns,
+           "--allowedTools", allowed_tools, *system_args, "--model", model, "--", prompt]
     try:
-        while reader.is_alive() or stderr_reader.is_alive():
-            if deadline and time.monotonic() >= deadline:
-                _kill_proc(proc, f"exceeded {AGENT_TIMEOUT:.0f}s timeout")
-                return False, result
-            reader.join(timeout=0.5)
-            stderr_reader.join(timeout=0.5)
-
-        exit_code = proc.wait()
-        if exit_code != 0:
-            log(f"claude \033[31mfailed\033[0m with exit code {exit_code}")
-            _dump_debug("claude", stderr_output, stdout_garbage)
-        return exit_code == 0, result
+        rc, stderr, garbage = _run_subprocess(cmd, cwd or ROOT, run_log, on_event, timeout=AGENT_TIMEOUT)
     except KeyboardInterrupt:
-        proc.kill()
-        proc.wait()
-        print()
-        log("task stopped")
-        return False, result
+        print(); log("task stopped"); return False, result
+    if rc != 0:
+        log(f"claude \033[31mfailed\033[0m with exit code {rc}")
+        _dump_debug("claude", [l.decode().strip() for l in stderr if l.strip()], garbage)
+    return rc == 0, result
 
 def _format_result(result):
     """Format result with $/hr rate (needs runner state)."""
