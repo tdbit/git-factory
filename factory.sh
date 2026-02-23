@@ -486,7 +486,8 @@ AGENT_TIMEOUT = float(os.environ.get("FACTORY_TIMEOUT_SEC", "0")) or None
 
 def _kill_proc(proc, reason="timeout"):
     """Terminate a subprocess gracefully, then force-kill after 5s."""
-    log(f"killing agent ({reason})")
+    log(f"\033[33m⚙ factory\033[0m killing agent")
+    log(f"  ✗ \033[31m{reason}\033[0m")
     proc.terminate()
     try:
         proc.wait(timeout=5)
@@ -535,7 +536,7 @@ def _run_subprocess(cmd, cwd, run_log, on_event, timeout=None):
     t_out = threading.Thread(target=_read_stdout, daemon=True)
     t_err = threading.Thread(target=_read_stderr, daemon=True)
     t_out.start(); t_err.start()
-    hb_sec = float(os.environ.get("FACTORY_HEARTBEAT_SEC", "15"))
+    hb_sec = float(os.environ.get("FACTORY_HEARTBEAT_SEC", "8"))
     deadline = start + timeout if timeout else None
     last_seen, next_hb = start, start + hb_sec
     while proc.poll() is None:
@@ -546,7 +547,7 @@ def _run_subprocess(cmd, cwd, run_log, on_event, timeout=None):
             _kill_proc(proc, f"exceeded {timeout:.0f}s timeout")
             break
         if now >= next_hb:
-            log(f"still working… {int(now - start)}s"); next_hb = now + hb_sec
+            _show_progress(f"\033[33m  ⚙ {random.choice(NOISES)}…\033[0m \033[2m{int(now - start)}s\033[0m"); next_hb = now + hb_sec
         time.sleep(0.2)
     t_out.join(timeout=1); t_err.join(timeout=1)
     return proc.returncode, stderr_lines, stdout_garbage
@@ -594,11 +595,11 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
         last_stderr = b"".join(stderr).strip()
         stderr_text = last_stderr.decode(errors="replace")
         if any(s in stderr_text.lower() for s in ("does not exist or you do not have access", "model_not_found", "invalid model")):
-            log(f"codex model unavailable: {model}, trying fallback"); continue
-        log(f"codex \033[31mfailed\033[0m with exit code {rc}")
+            log(f"  ✗ \033[31mcodex model unavailable: {model}, trying fallback\033[0m"); continue
+        log(f"  ✗ codex \033[31mfailed\033[0m (exit {rc})")
         _dump_debug("codex", [stderr_text] if stderr_text else [], garbage)
         return False, None
-    log("codex \033[31mfailed\033[0m for all configured models")
+    log(f"  ✗ codex \033[31mfailed\033[0m for all configured models")
     _dump_debug("codex", [last_stderr.decode(errors="replace")] if last_stderr else [], [])
     return False, None
 
@@ -641,9 +642,9 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
     try:
         rc, stderr, garbage = _run_subprocess(cmd, cwd or ROOT, run_log, on_event, timeout=AGENT_TIMEOUT)
     except KeyboardInterrupt:
-        print(); log("task stopped"); return False, result
+        print(); log("  ✗ \033[31minterrupted\033[0m"); return False, result
     if rc != 0:
-        log(f"claude \033[31mfailed\033[0m with exit code {rc}")
+        log(f"  ✗ claude \033[31mfailed\033[0m (exit {rc})")
         _dump_debug("claude", [l.decode().strip() for l in stderr if l.strip()], garbage)
     return rc == 0, result
 
