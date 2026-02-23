@@ -304,18 +304,8 @@ def item_slug(path):
     return re.sub(r"^\d+-", "", Path(path).stem)
 
 def item_path(item):
-    """Walk parent chain → 'initiative-slug/project-slug/...'. Used for branch and worktree paths."""
-    parts = []
-    path = item
-    while path:
-        parts.append(item_slug(path))
-        p = ROOT / path
-        if not p.exists():
-            break
-        parsed = parse_frontmatter(p.read_text())
-        path = parsed[0].get("parent", "") if parsed else ""
-    parts.reverse()
-    return "/".join(parts)
+    """Return 'type/slug' for branch and worktree paths."""
+    return Path(item).parts[0].rstrip("s") + "/" + item_slug(item)
 
 def read_md(name):
     """Read a markdown file from ROOT, or return empty string if missing."""
@@ -328,8 +318,7 @@ import os, sys, re, signal, time, shutil, subprocess, json, threading, atexit, r
 from library import (
     ROOT, TASKS_DIR, STATE_DIR, PARENT_REPO, DEFAULT_TOOLS,
     parse_frontmatter, load_tasks, update_task_meta, next_id,
-    check_done, check_done_details, next_task,
-    item_slug, item_path, read_md,
+    check_done, check_done_details, next_task, item_path, read_md,
     active_items, summarize_queue, purpose_of, triage,
 )
 
@@ -362,37 +351,41 @@ def _git(*args, cwd=ROOT):
     """Run a git command, return stripped stdout."""
     return subprocess.check_output(["git"] + list(args), cwd=cwd, stderr=subprocess.STDOUT).decode().strip()
 
-def worktree_for(item):
-    """Ensure branches and worktree exist for an item. Returns worktree path."""
+def branch_for(item):
+    """Ensure a factory/* branch exists for an item, creating ancestor branches first."""
     rel = item_path(item)
-    segments = rel.split("/")
     branch = f"factory/{rel}"
+    try:
+        _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}", cwd=PARENT_REPO)
+        return branch
+    except subprocess.CalledProcessError:
+        pass
+    meta = parse_frontmatter((ROOT / item).read_text())
+    parent = meta[0].get("parent", "") if meta else ""
+    base = branch_for(parent) if parent else _load_config().get("default_branch", "main")
+    _git("branch", branch, base, cwd=PARENT_REPO)
+    return branch
+
+def worktree_for(item):
+    """Ensure branch and worktree exist for an item. Returns worktree path."""
+    rel = item_path(item)
+    branch = branch_for(item)
     wt_dir = ROOT / "worktrees" / rel
-    default_branch = _load_config().get("default_branch", "main")
 
-    # ensure each ancestor branch exists
-    for i in range(len(segments)):
-        name = "factory/" + "/".join(segments[:i+1])
-        parent = ("factory/" + "/".join(segments[:i])) if i > 0 else default_branch
-        try:
-            _git("show-ref", "--verify", "--quiet", f"refs/heads/{name}", cwd=PARENT_REPO)
-        except subprocess.CalledProcessError:
-            _git("branch", name, parent, cwd=PARENT_REPO)
-
-    # if dir exists but isn't a registered worktree, nuke it
-    if wt_dir.exists():
-        wt_list = _git("worktree", "list", "--porcelain", cwd=PARENT_REPO)
-        if str(wt_dir.resolve()) not in wt_list:
-            shutil.rmtree(wt_dir, ignore_errors=True)
-            _git("worktree", "prune", cwd=PARENT_REPO)
+    # nuke stale worktree dir
+    if wt_dir.exists() and str(wt_dir.resolve()) not in _git("worktree", "list", "--porcelain", cwd=PARENT_REPO):
+        shutil.rmtree(wt_dir, ignore_errors=True)
+        _git("worktree", "prune", cwd=PARENT_REPO)
 
     # create worktree if needed
     if not wt_dir.exists():
         wt_dir.parent.mkdir(parents=True, exist_ok=True)
         _git("worktree", "add", str(wt_dir), branch, cwd=PARENT_REPO)
-        base_hash = _git("rev-parse", "--short", branch, cwd=PARENT_REPO)
+        meta = parse_frontmatter((ROOT / item).read_text())
+        parent = meta[0].get("parent", "") if meta else ""
+        base = f"factory/{item_path(parent)}" if parent else _load_config().get("default_branch", "main")
         log(f"\033[33m⚙ factory\033[0m created workstream")
-        log(f"  → branch: \033[2m{branch}\033[0m\n  → worktree: \033[2m{rel}\033[0m\n  → base: \033[2m{default_branch}@{base_hash}\033[0m\n")
+        log(f"  → branch: \033[2m{branch}\033[0m\n  → base: \033[2m{base}@{_git('rev-parse', '--short', branch, cwd=PARENT_REPO)}\033[0m\n")
 
     return wt_dir
 
@@ -419,7 +412,6 @@ def log(msg):
     if _run_log_file:
         _run_log_file.write(_ansi_regex.sub("", msg) + "\n")
         _run_log_file.flush()
-
 
 def _acquire_pid():
     """Write pid file, returning False if another instance is running."""
@@ -480,7 +472,6 @@ def load_agent(name):
         "tools": meta.get("tools", DEFAULT_TOOLS),
     }
 
-
 def write_task(slug, body, handler=None, tools=None, previous=None):
     name = f"{str(next_id(TASKS_DIR)).zfill(4)}-{slug}"
     path = TASKS_DIR / f"{name}.md"
@@ -493,7 +484,6 @@ def write_task(slug, body, handler=None, tools=None, previous=None):
     _git("add", str(path.relative_to(ROOT)))
     _git("commit", "-m", f"New Task: {name}")
     return name
-
 
 # --- agent runner ---
 
@@ -675,7 +665,6 @@ def run_codex(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cw
     _dump_debug("codex", [last_stderr.decode(errors="replace")] if last_stderr else [], [])
     return False, None
 
-
 def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, cli_name=None, cwd=None, run_log=None):
     cli_path = cli_path or shutil.which(cli_name or "claude")
     if not cli_path:
@@ -780,7 +769,6 @@ def run_claude(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cli_path=None, c
         log("task stopped")
         return False, result
 
-
 def _format_result(result):
     """Format result with $/hr rate (needs runner state)."""
     if not result:
@@ -810,11 +798,7 @@ def run_agent(prompt, allowed_tools=DEFAULT_TOOLS, agent=None, cwd=None, run_log
 # --- main loop ---
 
 def run():
-    cli = _provider_cli()
-    if not cli:
-        return
-
-    if not _acquire_pid():
+    if not _provider_cli() or not _acquire_pid():
         return
 
     global _run_log_file, _start_time, _total_cost, _task_count
