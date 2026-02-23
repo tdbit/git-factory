@@ -163,9 +163,13 @@ def parse_task(path):
         if in_done and re.match(r'^##\s+', line):
             in_done = False
         if in_done:
-            m = re.match(r'\s*-?\s*`?(\w+\(.*\))`?', line) or re.match(r'\s*-?\s*`?(never)`?', line)
-            if m:
-                done_lines.append(m.group(1))
+            stripped = re.sub(r'^[\s\-*`]+', '', line)
+            # conditions end with ") or ') — cut after the last one; 'never' has no quotes
+            m_end = re.search(r'.*(["\'])\)', stripped)
+            if m_end:
+                stripped = stripped[:m_end.end()]
+            if stripped and not stripped.startswith('#'):
+                done_lines.append(stripped)
     return {
         "name": path.stem,
         "tools": meta.get("tools", DEFAULT_TOOLS),
@@ -319,7 +323,7 @@ from library import (
 
 AGENTS_DIR = ROOT / "agents"
 LOGS_DIR = ROOT / "logs"
-NOISES = "Clanging Bing-banging Grinding Ka-chunking Ratcheting Hammering Whirring Pressing Stamping Riveting Welding Bolting Torqueing Clatter-clanking Thudding Shearing Punching Forging Sparking Sizzling Honing Milling Buffing Tempering Ka-thunking".split()
+NOISES = "clanging bing-banging grinding ka-chunking ratcheting hammering whirring pressing stamping riveting welding bolting torqueing clatter-clanking thudding shearing punching forging sparking honing milling buffing tempering ka-thunking".split()
 
 # --- config (written once at bootstrap) ---
 _config = None
@@ -547,7 +551,7 @@ def _run_subprocess(cmd, cwd, run_log, on_event, timeout=None):
             _kill_proc(proc, f"exceeded {timeout:.0f}s timeout")
             break
         if now >= next_hb:
-            _show_progress(f"\033[33m  ⚙ {random.choice(NOISES)}…\033[0m \033[2m{int(now - start)}s\033[0m"); next_hb = now + hb_sec
+            _show_progress(f"\033[2m  ⚙ {random.choice(NOISES)}… {int(now - start)}s\033[0m"); next_hb = now + hb_sec
         time.sleep(0.2)
     t_out.join(timeout=1); t_err.join(timeout=1)
     return proc.returncode, stderr_lines, stdout_garbage
@@ -1298,19 +1302,26 @@ If any answer is no, the task needs rework.
 Completion conditions checked by the runner after the agent finishes. These are the contract — the only thing that determines success or failure.
 
 Supported conditions (one per line, all must pass):
-- `file_exists("path")` — file exists in the worktree
-- `file_absent("path")` — file does not exist
-- `file_contains("path", "text")` — file exists and contains text
-- `file_missing_text("path", "text")` — file missing or lacks text
-- `command("cmd")` — shell command exits 0
-- `never` — task never completes (recurring)
 
-Rules for done conditions:
+```
+file_exists("path")
+file_absent("path")
+file_contains("path", "text")
+file_missing_text("path", "text")
+command("cmd")
+never
+```
+
+Write exactly these forms — one bare function call per line, nothing else on the line.
+
+Rules:
 - **Mechanically verifiable.** No human judgment. The runner checks these automatically.
 - **Necessary and sufficient.** If the conditions pass, the task is done. If the task is done, the conditions pass. No gap in either direction.
 - **Matched to the prompt.** If the prompt says "write X" and the done condition checks for Y, the task is broken.
 - **Content, not formatting.** `file_contains` does exact substring matching. Never include markdown syntax (`#`, `**`, `-`) in the match text — agents vary heading levels and formatting. Match the words, not the decoration.
-- **Paths are relative to the factory root.** You are inside `.factory/`. Use `tasks/0002-foo.md`, not `.factory/tasks/0002-foo.md`.
+- **Paths are relative to the working directory.** 
+  - For factory tasks (no parent), paths are relative to `.factory/` — use `tasks/0002-foo.md`.
+  - For project tasks (has parent), paths are relative to the source repo root — use `directory/filename`, not `../directory/filename`.
 - **No redundant conditions.** `file_contains` implies `file_exists` — never use both on the same path.
 - **Fewer is better.** 1–3 conditions for most tasks. If you need 10, you have 3 tasks.
 TASKS
