@@ -1319,9 +1319,9 @@ Rules:
 - **Necessary and sufficient.** If the conditions pass, the task is done. If the task is done, the conditions pass. No gap in either direction.
 - **Matched to the prompt.** If the prompt says "write X" and the done condition checks for Y, the task is broken.
 - **Content, not formatting.** `file_contains` does exact substring matching. Never include markdown syntax (`#`, `**`, `-`) in the match text — agents vary heading levels and formatting. Match the words, not the decoration.
-- **Paths are relative to the working directory.** 
+- **All paths are relative to the working directory — never use absolute paths.** The runner sets `cwd` before evaluating conditions. This applies to `file_*` paths **and** to `command()` shell strings.
   - For factory tasks (no parent), paths are relative to `.factory/` — use `tasks/0002-foo.md`.
-  - For project tasks (has parent), paths are relative to the source repo root — use `directory/filename`, not `../directory/filename`.
+  - For project tasks (has parent), paths are relative to the project worktree root — use `cd dir && cmd`, not `cd /absolute/path && cmd`.
 - **No redundant conditions.** `file_contains` implies `file_exists` — never use both on the same path.
 - **Fewer is better.** 1–3 conditions for most tasks. If you need 10, you have 3 tasks.
 TASKS
