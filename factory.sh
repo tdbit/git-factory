@@ -7,6 +7,7 @@ set -euo pipefail
 # --- constants ---
 SOURCE_DIR="$(git rev-parse --show-toplevel)"
 FACTORY_DIR="${SOURCE_DIR}/.factory"
+CLONE_DIR="${FACTORY_DIR}/clone"
 PROJECT_WORKTREES="${FACTORY_DIR}/worktrees"
 PY_NAME="factory.py"
 EXCLUDE_FILE="$SOURCE_DIR/.git/info/exclude"
@@ -43,7 +44,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TASKS_DIR = ROOT / "tasks"
 STATE_DIR = ROOT / "state"
-PARENT_REPO = ROOT.parent
+CLONE_REPO = ROOT / "clone"
 DEFAULT_TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
 
 def parse_frontmatter(text):
@@ -315,7 +316,7 @@ cat > "$1/$PY_NAME" <<'RUNNER'
 #!/usr/bin/env python3
 import os, sys, re, signal, time, shutil, subprocess, json, threading, atexit, random
 from library import (
-    ROOT, TASKS_DIR, STATE_DIR, PARENT_REPO, DEFAULT_TOOLS,
+    ROOT, TASKS_DIR, STATE_DIR, CLONE_REPO, DEFAULT_TOOLS,
     parse_frontmatter, load_tasks, update_task_meta, next_id,
     check_done, check_done_details, next_task, item_path, read_md,
     active_items, summarize_queue, purpose_of, triage,
@@ -351,18 +352,17 @@ def _git(*args, cwd=ROOT):
     return subprocess.check_output(["git"] + list(args), cwd=cwd, stderr=subprocess.STDOUT).decode().strip()
 
 def branch_for(item):
-    """Ensure a factory/* branch exists for an item, creating ancestor branches first."""
-    rel = item_path(item)
-    branch = f"factory/{rel}"
+    """Ensure a branch exists in the clone for an item, creating ancestor branches first."""
+    branch = item_path(item)
     try:
-        _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}", cwd=PARENT_REPO)
+        _git("show-ref", "--verify", "--quiet", f"refs/heads/{branch}", cwd=CLONE_REPO)
         return branch
     except subprocess.CalledProcessError:
         pass
     meta = parse_frontmatter((ROOT / item).read_text())
     parent = meta[0].get("parent", "") if meta else ""
     base = branch_for(parent) if parent else _load_config().get("default_branch", "main")
-    _git("branch", branch, base, cwd=PARENT_REPO)
+    _git("branch", branch, base, cwd=CLONE_REPO)
     return branch
 
 def worktree_for(item):
@@ -372,19 +372,19 @@ def worktree_for(item):
     wt_dir = ROOT / "worktrees" / rel
 
     # nuke stale worktree dir
-    if wt_dir.exists() and str(wt_dir.resolve()) not in _git("worktree", "list", "--porcelain", cwd=PARENT_REPO):
+    if wt_dir.exists() and str(wt_dir.resolve()) not in _git("worktree", "list", "--porcelain", cwd=CLONE_REPO):
         shutil.rmtree(wt_dir, ignore_errors=True)
-        _git("worktree", "prune", cwd=PARENT_REPO)
+        _git("worktree", "prune", cwd=CLONE_REPO)
 
     # create worktree if needed
     if not wt_dir.exists():
         wt_dir.parent.mkdir(parents=True, exist_ok=True)
-        _git("worktree", "add", str(wt_dir), branch, cwd=PARENT_REPO)
+        _git("worktree", "add", str(wt_dir), branch, cwd=CLONE_REPO)
         meta = parse_frontmatter((ROOT / item).read_text())
         parent = meta[0].get("parent", "") if meta else ""
-        base = f"factory/{item_path(parent)}" if parent else _load_config().get("default_branch", "main")
+        base = item_path(parent) if parent else _load_config().get("default_branch", "main")
         log(f"\033[33m⚙ factory\033[0m created workstream")
-        log(f"  → branch: \033[2m{branch}\033[0m\n  → base: \033[2m{base}@{_git('rev-parse', '--short', branch, cwd=PARENT_REPO)}\033[0m\n")
+        log(f"  → branch: \033[2m{branch}\033[0m\n  → base: \033[2m{base}@{_git('rev-parse', '--short', branch, cwd=CLONE_REPO)}\033[0m\n")
 
     return wt_dir
 
@@ -695,18 +695,18 @@ def run():
     atexit.register(lambda: _run_log_file.close() if _run_log_file and not _run_log_file.closed else None)
 
     log(f"\033[H\033[2J\033[33m⚙ factory\033[0m starting up")
-    log(f"  → repo: \033[2m{PARENT_REPO}\033[0m\n  → logs: \033[2m{log_path}\033[0m\n  → tasks: \033[2m{TASKS_DIR} ({len(load_tasks())})\033[0m \n")
+    log(f"  → repo: \033[2m{ROOT.parent}\033[0m\n  → logs: \033[2m{log_path}\033[0m\n  → tasks: \033[2m{TASKS_DIR} ({len(load_tasks())})\033[0m \n")
 
     # --- git helpers ---
     #
     # Two repos are in play:
     #   1. Factory repo (.factory/) — task metadata, initiatives, projects, agent defs
-    #   2. Source repo worktrees (.factory/worktrees/<slug>) — actual code changes
+    #   2. Clone (.factory/clone/) — clone of the source repo; all branches and worktrees live here
     #
     # Factory tasks (thinker/planner/fixer) work in the factory repo.
     #   Agent commits are squashed so each task = one clean commit.
     #
-    # Project tasks (developer) work in a worktree on a factory/* branch.
+    # Project tasks (developer) work in a clone worktree (.factory/worktrees/<slug>).
     #   Agent commits stay as-is. Only the task file is updated in the factory repo.
 
     def commit_factory(task, message, stage_all=False):
@@ -734,6 +734,10 @@ def run():
             return []
 
     while True:
+        try:
+            _git("fetch", "origin", cwd=CLONE_REPO)
+        except subprocess.CalledProcessError:
+            pass
         task = next_task()
         if task is None:
             all_tasks = load_tasks()
@@ -748,8 +752,8 @@ def run():
             prj_section, prj_active = active_items("projects", "Active Projects")
 
             if not has_purpose:
-                task_name = f"understand-{PARENT_REPO.name}"
-                prompt = f"Understand the purpose of the source repository `{PARENT_REPO}` and write it in `PURPOSE.md`"
+                task_name = f"understand-{CLONE_REPO.name}"
+                prompt = f"Understand the purpose of the repository at `{CLONE_REPO}` and write it in `PURPOSE.md`"
                 write_task(task_name, prompt, handler="thinker", tools="Read,Glob,Grep,Write")
             elif prj_active == 0:
                 queue = summarize_queue(all_tasks)
@@ -774,7 +778,7 @@ def run():
         # build prompt
         prologue = read_md("PROLOGUE.md") or ""
         body = task["prompt"] or ""
-        epilogue = read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)).replace("{source_repo}", str(PARENT_REPO)) if work_dir != ROOT else ""
+        epilogue = read_md("EPILOGUE.md").replace("{project_dir}", str(work_dir)) if work_dir != ROOT else ""
         prompt = "\n\n".join(p for p in [prologue, body, epilogue] if p)
 
         agent_def = None
@@ -890,7 +894,6 @@ local REPO="$(basename "$SOURCE_DIR")"
 cat > "$1/PROLOGUE.md" <<PROLOGUE
 You are an agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata for \`$REPO\`.
 
-Source repo: \`$SOURCE_DIR\`
 Factory repo: \`$FACTORY_DIR\`
 
 All file paths in factory metadata (task conditions, references, etc.) are relative to the factory root (\`.factory/\`). **NEVER** prefix paths with \`.factory/\` — you are already inside it.
@@ -1624,8 +1627,6 @@ cat > "$1/EPILOGUE.md" <<'EPILOGUE'
 ## Worktree
 
 Your working directory is `{project_dir}`. This is a git worktree — a separate checkout on a project branch. **All reads and writes MUST use paths within this directory.**
-
-Do not use paths under `{source_repo}`.  **EDITING FILES IN {source_repo} WILL CAUSE IRREPARABLE HARM**
 EPILOGUE
 }
 
@@ -1637,8 +1638,8 @@ set -euo pipefail
 
 if [[ "\${1:-}" == "teardown" ]]; then
   echo "This will permanently remove:"
-  echo "  - The .factory/ itself (standalone repo)"
-  echo "  - All factory worktrees & factory/* branches"
+  echo "  - The .factory/ directory (factory repo, clone, worktrees)"
+  echo "  - The 'factory' remote on your repo"
   echo "  - factory launcher"
   echo ""
   printf "Hit 'y' to confirm: "
@@ -1690,7 +1691,7 @@ write_files() {
     mkdir -p "$dir/$d"
   done
   cp "$0" "$dir/factory.sh"
-  printf '%s\n' __pycache__/ state/ logs/ worktrees/ .DS_Store Thumbs.db desktop.ini > "$dir/.gitignore"
+  printf '%s\n' __pycache__/ state/ logs/ worktrees/ clone/ .DS_Store Thumbs.db desktop.ini > "$dir/.gitignore"
   printf '{\n"default_branch": "%s",\n"project_worktrees": "%s",\n"provider": "%s"\n}\n' "$DEFAULT_BRANCH" "$PROJECT_WORKTREES" "$PROVIDER" > "$dir/config.json"
   write_python "$dir"
   write_prologue_md "$dir"
@@ -1716,17 +1717,8 @@ teardown() {
     echo -e "\033[31mfactory:\033[0m error: unsafe FACTORY_DIR: $FACTORY_DIR" >&2
     exit 1
   fi
-
-  git -C "$SOURCE_DIR" worktree list --porcelain | grep "^worktree $FACTORY_DIR/" | cut -d' ' -f2 | while read -r wt; do
-    git -C "$SOURCE_DIR" worktree remove --force "$wt" 2>/dev/null || true
-  done
-  git -C "$SOURCE_DIR" worktree prune 2>/dev/null || true
-
+  git -C "$SOURCE_DIR" remote remove factory 2>/dev/null || true
   rm -rf "$FACTORY_DIR"
-
-  git for-each-ref --format='%(refname:short)' 'refs/heads/factory/' | while read -r b; do
-    git branch -D "$b" >/dev/null 2>&1 || true
-  done
   rm -f "$SOURCE_DIR/factory"
 }
 
@@ -1734,6 +1726,8 @@ teardown() {
 bootstrap() {
   setup_excludes
   write_files "$FACTORY_DIR"
+  git clone "$SOURCE_DIR" "$CLONE_DIR" --single-branch --branch "$DEFAULT_BRANCH"
+  git -C "$SOURCE_DIR" remote add factory "$CLONE_DIR"
   setup_repo
   write_launcher "$SOURCE_DIR"
   [[ "$KEEP_SCRIPT" == true ]] || remove_script
