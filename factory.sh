@@ -1717,12 +1717,10 @@ teardown() {
     exit 1
   fi
 
-  if [[ -d "$FACTORY_DIR/worktrees" ]]; then
-    for wt in "$FACTORY_DIR/worktrees"/*/; do
-      [[ -d "$wt" ]] && git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-    done
-    git worktree prune 2>/dev/null || true
-  fi
+  git -C "$SOURCE_DIR" worktree list --porcelain | grep "^worktree $FACTORY_DIR/" | cut -d' ' -f2 | while read -r wt; do
+    git -C "$SOURCE_DIR" worktree remove --force "$wt" 2>/dev/null || true
+  done
+  git -C "$SOURCE_DIR" worktree prune 2>/dev/null || true
 
   rm -rf "$FACTORY_DIR"
 
