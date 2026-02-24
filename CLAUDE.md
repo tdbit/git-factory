@@ -9,6 +9,7 @@ bash factory.sh              # first run: bootstrap + launch
 bash factory.sh [claude|codex]  # bootstrap with explicit provider
 ./factory                    # resume where it left off
 bash factory.sh bootstrap    # bootstrap only (no launch)
+bash factory.sh explain      # use the agent to explain factory.sh
 bash factory.sh dump         # write all factory files to ./factory_dump/
 bash factory.sh teardown     # tear down only (with confirmation)
 bash factory.sh help         # show help
@@ -17,12 +18,14 @@ bash factory.sh help         # show help
 
 ## Architecture
 
-Everything lives in a single file: `factory.sh` (bash installer + embedded Python runner). No external dependencies beyond an agent CLI (`claude`, `claude-code`, or `codex`), `git`, `python3`, and `bash`.
+Everything lives in a single file: `factory.sh` (bash installer + embedded Python). No external dependencies beyond an agent CLI (`claude`, `claude-code`, or `codex`), `git`, `python3`, and `bash`.
 
-- `factory.sh` creates `.factory/` as a standalone git repo (via `git init`)
-- The embedded Python runner (`factory.py`) is extracted into `.factory/`
+- `factory.sh` creates `.factory/` as a standalone git repo (via `git init`) for factory metadata
+- The source repo is cloned into `.factory/clone/` — all project branches and worktrees are created from this clone
+- A `factory` remote is added to the source repo pointing at the clone
+- The embedded Python (`library.py` + `factory.py`) is extracted into `.factory/`
 - Factory metadata (tasks, projects, initiatives) lives in the `.factory/` repo
-- Project worktrees for source code changes are created under `.factory/worktrees/` as git worktrees of the source repo on `factory/*` branches
+- Project worktrees for source code changes are created under `.factory/worktrees/` as git worktrees of the clone on `factory/*` branches
 - `.factory/` is locally ignored via `.git/info/exclude` (never pollutes tracked files)
 - After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
 
@@ -32,7 +35,9 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 |---|---|
 | `factory.sh` | One-shot installer (replaced by `./factory` after first run) |
 | `.factory/` | Standalone git repo for factory metadata |
-| `.factory/factory.py` | Python orchestrator |
+| `.factory/library.py` | Shared Python helpers (task parsing, conditions, queue) |
+| `.factory/factory.py` | Python orchestrator (runner loop, agent invocation) |
+| `.factory/clone/` | Clone of the source repo (base for project branches/worktrees) |
 | `.factory/PROLOGUE.md` | Prologue prepended to all task prompts |
 | `.factory/EPILOGUE.md` | Project task epilogue template |
 | `.factory/specs/AGENTS.md` | Agent format spec |
@@ -40,9 +45,11 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 | `.factory/specs/PROJECTS.md` | Project format spec |
 | `.factory/specs/TASKS.md` | Task format spec |
 | `.factory/agents/` | Agent definitions (markdown) |
-| `.factory/agents/UNDERSTAND.md` | Understanding agent instructions |
+| `.factory/agents/THINKER.md` | Thinking/understanding agent instructions |
 | `.factory/agents/PLANNER.md` | Planning agent instructions |
+| `.factory/agents/TASKER.md` | Task decomposition agent instructions |
 | `.factory/agents/FIXER.md` | Failure analysis protocol |
+| `.factory/agents/DEVELOPER.md` | Source code development agent instructions |
 | `.factory/initiatives/` | High-level goals (NNNN-slug.md) |
 | `.factory/projects/` | Mid-level projects (NNNN-slug.md) |
 | `.factory/tasks/` | Task queue (NNNN-slug.md, YAML frontmatter) |
@@ -55,20 +62,15 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
 
 `factory.sh` is structured as:
 
-1. **Constants** — `NOISES`, `SOURCE_DIR`, `FACTORY_DIR`, `PROJECT_WORKTREES`, `PY_NAME`, `EXCLUDE_FILE`
+1. **Constants** — `SOURCE_DIR`, `FACTORY_DIR`, `CLONE_DIR`, `PROJECT_WORKTREES`, `PY_NAME`, `EXCLUDE_FILE`
 2. **Provider detection** — first arg (`claude`/`codex`) or auto-detect from PATH; also `--keep-script` option
 3. **Default branch detection** — from `origin/HEAD`, falling back to `main`/`master`/`HEAD`
 4. **Dependency checks** — `PROVIDER` and `python3`
 5. **Functions**:
-   - `write_runner()` — embedded `factory.py` (~960 lines)
+   - `write_python()` — embedded `library.py` (~270 lines) + `factory.py` (~570 lines)
    - `write_prologue_md()` — prologue prepended to all task prompts
-   - `write_agents_md()` — agent format spec (written to `specs/`)
-   - `write_initiatives_md()` — initiative format spec (written to `specs/`)
-   - `write_projects_md()` — project format spec (written to `specs/`)
-   - `write_tasks_md()` — task format spec (written to `specs/`)
-   - `write_understand_md()` — understanding agent (written to `agents/`)
-   - `write_planner_md()` — planning agent (written to `agents/`)
-   - `write_fixer_md()` — failure analysis protocol (written to `agents/`)
+   - `write_specs()` — all four spec files (AGENTS, INITIATIVES, PROJECTS, TASKS) into `specs/`
+   - `write_agents()` — all five agent files (THINKER, PLANNER, TASKER, FIXER, DEVELOPER) into `agents/`
    - `write_epilogue_md()` — project task epilogue template
    - `write_launcher()` — `./factory` launcher script
    - `write_hook()` — post-commit hook (written to `hooks/`)
@@ -76,9 +78,9 @@ Everything lives in a single file: `factory.sh` (bash installer + embedded Pytho
    - `remove_script()` — delete `factory.sh` after bootstrap
    - `write_files()` — write all factory files to a given directory
    - `setup_repo()` — git init `.factory/`, set hooks path, initial commit
-   - `teardown()` — remove `.factory/`, worktrees, `factory/*` branches, launcher
-   - `bootstrap()` — orchestrates setup: excludes → files → repo → launcher → remove script
-6. **Command dispatch** — `case` handles `help`, `bootstrap`, `teardown`, `dump`, default (resume/bootstrap+launch)
+   - `teardown()` — remove `factory` remote, `rm -rf .factory/`, remove launcher
+   - `bootstrap()` — orchestrates setup: excludes → files → clone → remote → repo → launcher → remove script
+6. **Command dispatch** — `case` handles `help`, `bootstrap`, `teardown`, `explain`, `dump`, default (resume/bootstrap+launch)
 
 ## Task system
 

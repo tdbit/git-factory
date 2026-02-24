@@ -3,13 +3,14 @@
 ## Bootstrap sequence
 
 1. `factory.sh` creates `.factory/` as a standalone git repo (via `git init`) for factory metadata
-2. It writes a Python runner (`factory.py`), markdown instruction files (`CLAUDE.md`, `INITIATIVES.md`, `PROJECTS.md`, `TASKS.md`, `EPILOGUE.md`, `agents/PLANNER.md`, `agents/FIXER.md`), and two chained bootstrap tasks into `.factory/`
-3. The runner launches the agent CLI in headless mode (Claude uses `--dangerously-skip-permissions -p --output-format stream-json`; Codex uses `exec --json`)
-4. On first run, the agent executes two chained bootstrap tasks: first it defines the factory's own Purpose, then it reads your repo and defines the repo's Purpose, Measures, and Tests
-5. After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
-6. For project tasks that modify source code, the runner creates git worktrees under `.factory/worktrees/` on `factory/*` branches in the source repo
+2. It clones the source repo into `.factory/clone/` and adds a `factory` remote on the source repo pointing at the clone
+3. It writes Python files (`library.py` + `factory.py`), markdown instruction files (`PROLOGUE.md`, `EPILOGUE.md`, `specs/AGENTS.md`, `specs/INITIATIVES.md`, `specs/PROJECTS.md`, `specs/TASKS.md`, `agents/THINKER.md`, `agents/PLANNER.md`, `agents/TASKER.md`, `agents/FIXER.md`, `agents/DEVELOPER.md`) into `.factory/`
+4. The runner launches the agent CLI in headless mode (Claude uses `--dangerously-skip-permissions -p --output-format stream-json`; Codex uses `exec --json`)
+5. On first run, the runner auto-creates a planner task; the planner sees no understanding and creates a thinker task; the thinker examines the repo and feeds context back to the planner, which then creates initiatives, projects, and tasks
+6. After bootstrap, `factory.sh` replaces itself with a minimal `./factory` launcher
+7. For project tasks that modify source code, the runner creates git worktrees under `.factory/worktrees/` from the clone on `factory/*` branches
 
-The factory is isolated — `.factory/` is locally ignored via `.git/info/exclude` (never pollutes tracked files). Project worktrees give the agent its own branches to work on without touching your working tree.
+The factory is isolated — `.factory/` is locally ignored via `.git/info/exclude` (never pollutes tracked files). The clone and its worktrees give the agent its own branches to work on without touching your working tree.
 
 ## Directory layout
 
@@ -18,52 +19,61 @@ your-repo/
   factory.sh            # one-shot installer
   ./factory             # launcher (replaces factory.sh after bootstrap)
   .factory/             # standalone git repo, locally git-ignored
-    factory.py          # python orchestrator
+    library.py          # shared python helpers (parsing, conditions, queue)
+    factory.py          # python orchestrator (runner loop, agent invocation)
     factory.sh          # preserved copy of original installer (for teardown restore)
-    CLAUDE.md           # agent's operating instructions
-    INITIATIVES.md      # initiative format spec
-    PROJECTS.md         # project format spec
-    TASKS.md            # task format spec
+    PROLOGUE.md         # prologue prepended to all task prompts
     EPILOGUE.md         # project task epilogue template
-    PURPOSE.md          # purpose, measures, and tests (created by bootstrap task)
     config.json         # bootstrap config (provider, default branch, worktrees path)
-    .gitignore          # ignores state/, logs/, worktrees/
+    .gitignore          # ignores state/, logs/, worktrees/, clone/
+    clone/              # clone of source repo (base for project branches)
+    specs/              # format specs (markdown)
+      AGENTS.md         # agent format spec
+      INITIATIVES.md    # initiative format spec
+      PROJECTS.md       # project format spec
+      TASKS.md          # task format spec
     agents/             # agent persona definitions (markdown)
+      THINKER.md        # thinking/understanding agent
       PLANNER.md        # planning agent instructions
+      TASKER.md         # task decomposition agent
       FIXER.md          # failure analysis protocol
-    initiatives/        # high-level goals (YYYY-slug.md)
-    projects/           # mid-level projects (YYYY-MM-slug.md)
-    tasks/              # task queue (YYYY-MM-DD-slug.md)
+      DEVELOPER.md      # source code development agent
+    initiatives/        # high-level goals (NNNN-slug.md)
+    projects/           # mid-level projects (NNNN-slug.md)
+    tasks/              # task queue (NNNN-slug.md)
     hooks/              # git hooks for the factory repo
       post-commit       # post-commit hook
     state/              # runtime state (pid file, last run log)
     logs/               # agent run logs
-    worktrees/          # source repo worktrees for project tasks
+    worktrees/          # clone worktrees for project tasks
 ```
 
 ## Purpose framework (the final cause)
 
-On first run, the agent reads your codebase and writes a three-level Purpose framework into `.factory/CLAUDE.md`:
+On first run, the thinker agent examines the source repo and writes `PURPOSE.md` in the factory root. This is the factory's telos — it doesn't just have instructions, it has reasons.
 
-| Level | Question | Scope |
+The purpose file has four sections:
+
+| Section | What it answers | Who uses it |
 |---|---|---|
-| **Existential** | Why does this software exist? | The real-world outcome for users |
-| **Strategic** | What improvements compound over time? | Medium-term direction and leverage |
-| **Tactical** | What specific friction exists right now? | Near-term, observable, grounded in code |
+| **Purpose** | Why does this entity exist? What becomes true when it succeeds? | Everyone — orients all work |
+| **Measures** | How do you observe purpose being fulfilled better or worse? | Planner (find gaps), Fixer (diagnose failures) |
+| **Parts** | What are the essential logical constituents? | Planner (scope work to subsystems) |
+| **Principles** | What cross-cutting conventions and constraints apply? | Developer (make consistent decisions) |
 
-Each level also gets **Measures** (how you know it's working) and **Tests** (questions to ask before committing). This is the agent's telos — it doesn't just have instructions, it has reasons.
+Measures must track **degree** (not pass/fail) and include a **method of observation** — a command, metric, or concrete thing you can point at. Parts are only the essential ones (traces to purpose, not to platform/toolchain). Principles span the whole entity; if it only applies to one part, it belongs to that part.
 
 ## Planning hierarchy
 
-Work is organized in three levels that map directly to the Purpose levels:
+Work is organized in three levels, each tracing back to `PURPOSE.md`:
 
-| Planning level | Purpose level | What it addresses |
+| Level | What it addresses | Traces to |
 |---|---|---|
-| **Initiative** | Existential / Strategic | The big gaps between current state and purpose |
-| **Project** | Strategic / Tactical | Scoped deliverables that compound |
-| **Task** | Tactical | Specific, near-term changes |
+| **Initiative** | The biggest gap between current state and purpose | A measure from `PURPOSE.md` |
+| **Project** | Scoped deliverables that close part of an initiative | An initiative |
+| **Task** | Atomic unit of agent work | A project |
 
-Every initiative must trace to a Purpose bullet. Every project must advance an initiative. Every task must deliver a project artifact. The final cause propagates downward — a task that can't trace back to Purpose doesn't get created.
+Every initiative opens by restating the purpose and naming the measure it advances. Every project must advance an initiative. Every task must deliver a project artifact. The final cause propagates downward — a task that can't trace back to Purpose doesn't get created.
 
 ## Work hierarchy
 
@@ -71,9 +81,9 @@ All work is organized in three flat folders with relationships defined by frontm
 
 | Level | Folder | Naming | Purpose |
 |---|---|---|---|
-| Initiative | `initiatives/` | `YYYY-slug.md` | High-level goals |
-| Project | `projects/` | `YYYY-MM-slug.md` | Mid-level workstreams |
-| Task | `tasks/` | `YYYY-MM-DD-slug.md` | Atomic units of agent work |
+| Initiative | `initiatives/` | `NNNN-slug.md` | High-level goals |
+| Project | `projects/` | `NNNN-slug.md` | Mid-level workstreams |
+| Task | `tasks/` | `NNNN-slug.md` | Atomic units of agent work |
 
 **Structural relationships**
 
@@ -106,14 +116,13 @@ The system enforces focus by maintaining:
 
 ## Planning agent
 
-When no ready task exists, the runner automatically invokes a **planning agent** using the instructions in `.factory/agents/PLANNER.md`. The planner:
+When no ready task exists, the runner invokes agents in sequence to fill the queue:
 
-1. Checks scarcity invariants
-2. Promotes or creates initiatives / projects as needed
-3. Creates exactly **one** new task per planning run
-4. Commits the task file to the factory repo
+1. **Thinker** (`agents/THINKER.md`) — if no `PURPOSE.md` exists, examines the source repo and writes one (purpose, measures, parts, principles)
+2. **Planner** (`agents/PLANNER.md`) — reads `PURPOSE.md`, manages initiatives and projects, activates 1–2 projects. Does **not** create tasks.
+3. **Tasker** (`agents/TASKER.md`) — decomposes active projects into tasks, creating exactly one task per run
 
-The planning agent reads `INITIATIVES.md`, `PROJECTS.md`, and `TASKS.md` for format specs. Its instructions in `agents/PLANNER.md` are editable after bootstrap — no need to re-extract the runner.
+The planner reads `specs/INITIATIVES.md` and `specs/PROJECTS.md` for format specs. The tasker reads `specs/TASKS.md`. All agent instructions are editable after bootstrap — no need to re-extract the runner.
 
 ## Failure handling and self-modification
 
@@ -122,11 +131,11 @@ When a task fails or completes with unmet conditions, the runner marks it `statu
 The protocol has four steps:
 
 1. **Observe** — read the task file, run log, and git diff to understand what actually happened
-2. **Diagnose** — identify which factory Measure (from `PURPOSE.md`) was violated and which Test should have caught it
-3. **Prescribe** — create a new task that targets a *factory system file* (`factory.py`, `CLAUDE.md`, `agents/PLANNER.md`, etc.) to close the gap
+2. **Diagnose** — identify which contract (from specs or agent definitions) was violated and what check should have caught it
+3. **Prescribe** — create a new task that targets a *factory system file* (`library.py`, `factory.py`, `PROLOGUE.md`, `agents/*.md`, etc.) to close the gap
 4. **Retry** — only after the systemic fix is in place, create a new task for the original work
 
-This is the self-modifying part: the factory doesn't just retry failed work — it modifies its own instructions, runner code, or format specs to prevent the same class of failure from recurring. The failed task stays stopped. The fix task strengthens a Measure or adds a Test. The retry task benefits from the improved system.
+This is the self-modifying part: the factory doesn't just retry failed work — it modifies its own instructions, runner code, or format specs to prevent the same class of failure from recurring. The failed task stays stopped. The fix task strengthens a measure or adds a missing check. The retry task benefits from the improved system.
 
 Failures are classified by level:
 
@@ -140,7 +149,7 @@ The level determines the scope of the prescription — existential failures dema
 
 ## Task system
 
-Tasks are markdown files in `tasks/` named `YYYY-MM-DD-slug.md`. Each task has minimal YAML frontmatter for runner metadata, then a fixed set of markdown sections:
+Tasks are markdown files in `tasks/` named `NNNN-slug.md` (monotonic counter, e.g. `0001-slug.md`). Each task has minimal YAML frontmatter for runner metadata, then a fixed set of markdown sections:
 
 ```markdown
 ---
