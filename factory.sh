@@ -46,6 +46,16 @@ TASKS_DIR = ROOT / "tasks"
 STATE_DIR = ROOT / "state"
 CLONE_REPO = ROOT / "clone"
 DEFAULT_TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
+_SOURCE_REPO = str(ROOT.resolve().parent)
+_ABS_PREFIXES = sorted([_SOURCE_REPO, str(CLONE_REPO.resolve())], key=len, reverse=True)
+
+def _sanitize_condition(cond):
+    """Strip absolute paths that leak the source repo into conditions."""
+    for prefix in _ABS_PREFIXES:
+        cond = cond.replace(prefix + "/", "")
+        cond = cond.replace(prefix, ".")
+    cond = re.sub(r'\bcd\s+\.?\s*&&\s*', '', cond)
+    return cond
 
 def parse_frontmatter(text):
     """Split text into (meta_dict, body_string) or None if invalid."""
@@ -171,6 +181,16 @@ def parse_task(path):
                 stripped = stripped[:m_end.end()]
             if stripped and not stripped.startswith('#'):
                 done_lines.append(stripped)
+    # sanitize absolute paths in done conditions and fix the file on disk
+    clean_lines = [_sanitize_condition(c) for c in done_lines]
+    if clean_lines != done_lines:
+        text = path.read_text()
+        for orig, fixed in zip(done_lines, clean_lines):
+            if orig != fixed:
+                text = text.replace(orig, fixed)
+        path.write_text(text)
+        done_lines = clean_lines
+
     return {
         "name": path.stem,
         "tools": meta.get("tools", DEFAULT_TOOLS),
@@ -752,8 +772,8 @@ def run():
             prj_section, prj_active = active_items("projects", "Active Projects")
 
             if not has_purpose:
-                task_name = f"understand-{CLONE_REPO.name}"
-                prompt = f"Understand the purpose of the repository at `{CLONE_REPO}` and write it in `PURPOSE.md`"
+                task_name = "understand-repo"
+                prompt = f"Examine the codebase in `{CLONE_REPO}` and write `{CLONE_REPO}/PURPOSE.md`"
                 write_task(task_name, prompt, handler="thinker", tools="Read,Glob,Grep,Write")
             elif prj_active == 0:
                 queue = summarize_queue(all_tasks)
@@ -895,6 +915,7 @@ cat > "$1/PROLOGUE.md" <<PROLOGUE
 You are an agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata for \`$REPO\`.
 
 Factory repo: \`$FACTORY_DIR\`
+Project codebase: \`clone/\` (the source repository)
 
 All file paths in factory metadata (task conditions, references, etc.) are relative to the factory root (\`.factory/\`). **NEVER** prefix paths with \`.factory/\` — you are already inside it.
 
