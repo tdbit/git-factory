@@ -120,17 +120,6 @@ def summarize_queue(tasks):
             lines.append("")
     return "\n".join(lines)
 
-def purpose_of(entity):
-    """Return the relative path to the purpose file, or None if it doesn't exist.
-    For 'repo', checks PURPOSE.md in the factory root.
-    For anything else, checks PURPOSE.md in the project worktree."""
-    if entity == "repo":
-        path = ROOT / "PURPOSE.md"
-        return str(path.relative_to(ROOT)) if path.exists() else None
-    # project purpose lives in the worktree
-    slug = entity.replace("/", "-")
-    path = ROOT / "worktrees" / slug / "PURPOSE.md"
-    return str(path.relative_to(ROOT)) if path.exists() else None
 
 def triage(task, details, work_dir=None):
     """Collect failed task, condition results, log tail for the fixer."""
@@ -339,7 +328,7 @@ from library import (
     ROOT, TASKS_DIR, STATE_DIR, CLONE_REPO, DEFAULT_TOOLS,
     parse_frontmatter, load_tasks, update_task_meta, next_id,
     check_done, check_done_details, next_task, item_path, read_md,
-    active_items, summarize_queue, purpose_of, triage,
+    active_items, summarize_queue, triage,
 )
 
 AGENTS_DIR = ROOT / "agents"
@@ -389,7 +378,7 @@ def worktree_for(item):
     """Ensure branch and worktree exist for an item. Returns worktree path."""
     rel = item_path(item)
     branch = branch_for(item)
-    wt_dir = ROOT / "worktrees" / rel
+    wt_dir = ROOT / "worktrees" / rel.replace("/", "-")
 
     # nuke stale worktree dir
     if wt_dir.exists() and str(wt_dir.resolve()) not in _git("worktree", "list", "--porcelain", cwd=CLONE_REPO):
@@ -768,12 +757,12 @@ def run():
                 log(f"  ✗ \033[31mtasks exist but are blocked on dependencies\033[0m")
                 _log_summary()
                 return
-            has_purpose = purpose_of("repo") is not None
+            has_purpose = (CLONE_REPO / "PURPOSE.md").exists()
             prj_section, prj_active = active_items("projects", "Active Projects")
 
             if not has_purpose:
                 task_name = "understand-repo"
-                prompt = f"Examine the codebase in `{CLONE_REPO}` and write `{CLONE_REPO}/PURPOSE.md`"
+                prompt = "Examine the codebase and write `PURPOSE.md`\n\n## Done\nfile_exists(\"PURPOSE.md\")"
                 write_task(task_name, prompt, handler="thinker", tools="Read,Glob,Grep,Write")
             elif prj_active == 0:
                 queue = summarize_queue(all_tasks)
@@ -787,7 +776,7 @@ def run():
             continue
 
         name = task["name"]
-        work_dir = worktree_for(task["parent"]) if task["parent"] else ROOT
+        work_dir = worktree_for(task["parent"]) if task["parent"] else CLONE_REPO
 
         log(f"\033[32mtask\033[0m started: {name}")
 
@@ -838,6 +827,14 @@ def run():
                     _git("commit", "-m", f"WIP: {name}", cwd=work_dir)
             except Exception:
                 pass
+
+        # commit any changes the agent made in the clone (e.g. PURPOSE.md)
+        try:
+            if _git("status", "--porcelain", cwd=CLONE_REPO):
+                _git("add", "-A", cwd=CLONE_REPO)
+                _git("commit", "-m", name, cwd=CLONE_REPO)
+        except Exception:
+            pass
 
         head_after = git_head(work_dir)
         agent_committed = head_before != head_after
@@ -912,16 +909,13 @@ chmod +x "$1/$PY_NAME"
 write_prologue_md() {
 local REPO="$(basename "$SOURCE_DIR")"
 cat > "$1/PROLOGUE.md" <<PROLOGUE
-You are an agent operating inside \`.factory/\`, a standalone git repo that tracks factory metadata for \`$REPO\`.
+You are a factory agent working on \`$REPO\`.
 
-Factory repo: \`$FACTORY_DIR\`
-Project codebase: \`clone/\` (the source repository)
-
-All file paths in factory metadata (task conditions, references, etc.) are relative to the factory root (\`.factory/\`). **NEVER** prefix paths with \`.factory/\` — you are already inside it.
+Factory metadata is at \`../\` (tasks, projects, initiatives, specs, agents).
 
 If your task has a \`## Done\` section, those are machine-evaluated conditions the runner checks after you finish. File paths and names must match precisely. Available conditions: \`file_exists("path")\`, \`file_absent("path")\`, \`file_contains("path", "text")\`, \`file_missing_text("path", "text")\`, \`command("cmd")\` (exit 0), \`never\` (recurring task).
 
-When creating task files, **ALWAYS** get the next ID by running: \`python3 -c "from library import next_id; from pathlib import Path; print(next_id(Path('tasks')))"\`. Zero-pad to 4 digits (e.g. \`0013\`).
+When creating task files, **ALWAYS** get the next ID by running: \`cd .. && python3 -c "from library import next_id; from pathlib import Path; print(next_id(Path('tasks')))"\`. Zero-pad to 4 digits (e.g. \`0013\`).
 PROLOGUE
 }
 
@@ -1344,8 +1338,8 @@ Rules:
 - **Matched to the prompt.** If the prompt says "write X" and the done condition checks for Y, the task is broken.
 - **Content, not formatting.** `file_contains` does exact substring matching. Never include markdown syntax (`#`, `**`, `-`) in the match text — agents vary heading levels and formatting. Match the words, not the decoration.
 - **All paths are relative to the working directory — never use absolute paths.** The runner sets `cwd` before evaluating conditions. This applies to `file_*` paths **and** to `command()` shell strings.
-  - For factory tasks (no parent), paths are relative to `.factory/` — use `tasks/0002-foo.md`.
-  - For project tasks (has parent), paths are relative to the project worktree root — use `cd dir && cmd`, not `cd /absolute/path && cmd`.
+  - All working directories are one level below `.factory/` — use `../tasks/0002-foo.md` for factory metadata.
+  - For project codebase paths, use relative paths from the working directory root.
 - **No redundant conditions.** `file_contains` implies `file_exists` — never use both on the same path.
 - **Fewer is better.** 1–3 conditions for most tasks. If you need 10, you have 3 tasks.
 TASKS
@@ -1386,7 +1380,7 @@ For each measure:
 
 ## 4. Write purpose file
 
-Write your output to `PURPOSE.md`. For the repo scope, this is `PURPOSE.md` in the factory root. For a project scope, this is `PURPOSE.md` in the project's worktree.
+Write your output to `PURPOSE.md` in the current directory.
 
 Structure the file as:
 
@@ -1468,12 +1462,12 @@ If there is no active initiative, continue to step 4.
 
 ## 4. Create Initiatives
 
-Read `specs/INITIATIVES.md`. Find the highest-leverage gap between the current state and the purpose. Before writing the Problem, write the intro paragraph: restating the purpose in one sentence, naming the measure this initiative advances and explaining how closing this gap moves that measure. Create 1–3 backlog initiatives. Activate exactly one. Continue to step 5.
+Read `../specs/INITIATIVES.md`. Find the highest-leverage gap between the current state and the purpose. Before writing the Problem, write the intro paragraph: restating the purpose in one sentence, naming the measure this initiative advances and explaining how closing this gap moves that measure. Create 1–3 backlog initiatives. Activate exactly one. Continue to step 5.
 
 
 ## 5. Decompose into Projects
 
-Read `specs/PROJECTS.md`. Take the active initiative and check what projects already exist. For each unmet part of the initiative's outcome, create a project. Do not recreate projects that already completed successfully.
+Read `../specs/PROJECTS.md`. Take the active initiative and check what projects already exist. For each unmet part of the initiative's outcome, create a project. Do not recreate projects that already completed successfully.
 
 Activate 1–2 projects.
 
@@ -1507,7 +1501,7 @@ Your task body begins with `Read PURPOSE.md …`. Read it for context on measure
 
 ## 2. Read the Project
 
-Read the active project file in `projects/`. Understand its deliverables, acceptance criteria, and scope.
+Read the active project file in `../projects/`. Understand its deliverables, acceptance criteria, and scope.
 
 ## 3. Review Completed Work
 
@@ -1524,7 +1518,7 @@ Check every deliverable and acceptance criterion in the project file against wha
 
 ## 5. Create Tasks
 
-Read `specs/TASKS.md`. For each unmet deliverable, create one task (or a small number if the deliverable requires sequencing). Each task:
+Read `../specs/TASKS.md`. For each unmet deliverable, create one task (or a small number if the deliverable requires sequencing). Each task:
 
 - Produces one concrete artifact or change.
 - Has `handler: developer` if it changes source repo code.
@@ -1556,7 +1550,7 @@ author: factory
 
 You diagnose failures and fix the system that produced them. You do not redo the failed work. You do not modify or reactivate stopped tasks.
 
-You are invoked when a task stops with `stop_reason: failed` or `stop_reason: incomplete`. Read the relevant spec files in `specs/` and agent definitions in `agents/` to orient on expected behavior before proceeding.
+You are invoked when a task stops with `stop_reason: failed` or `stop_reason: incomplete`. Read the relevant spec files in `../specs/` and agent definitions in `../agents/` to orient on expected behavior before proceeding.
 
 # Method
 
@@ -1565,14 +1559,14 @@ You are invoked when a task stops with `stop_reason: failed` or `stop_reason: in
 Gather facts:
 
 - Read the failed task file — its prompt, Done conditions, and Context.
-- Read the run log (`state/last_run.jsonl`). What did the agent actually do?
+- Read the run log (`../state/last_run.jsonl`). What did the agent actually do?
 - If a `## Worktree` section is present, the failed task ran in that worktree — inspect diffs and files there, not in the factory root.
 - Read the git diff of what the agent produced, if anything.
 - Note the delta between what was asked and what was delivered.
 
 ## 2. Diagnose
 
-Identify what went wrong at the system level. Read the spec for the failed task's type (e.g. `specs/TASKS.md`, the handler's agent definition). The failure violated a contract or convention — find it. Then ask: what should have caught this before or during the task, and why didn't it?
+Identify what went wrong at the system level. Read the spec for the failed task's type (e.g. `../specs/TASKS.md`, the handler's agent definition). The failure violated a contract or convention — find it. Then ask: what should have caught this before or during the task, and why didn't it?
 
 - No relevant check exists → that's the gap.
 - A check exists but missed the failure → the check is inadequate.
@@ -1583,7 +1577,7 @@ Identify what went wrong at the system level. Read the spec for the failed task'
 Create a new task that closes the gap:
 
 - Include `author: fixer` in frontmatter.
-- Target a factory-internal file — `factory.py`, `PROLOGUE.md`, an agent definition, a format spec.
+- Target a factory-internal file — `../factory.py`, `../PROLOGUE.md`, an agent definition, a format spec.
 - **Do not modify files in the worktree or source repo.** Only change factory-internal files.
 - The fix must strengthen the violated measure or add the check that should have caught the failure.
 - Done conditions verify the system change, not the original deliverable.
