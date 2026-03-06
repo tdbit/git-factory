@@ -1584,7 +1584,7 @@ Create a new task that closes the gap:
 
 ## 4. Retry
 
-Create a new task for the original work — adjusted if the failure revealed the original task was flawed. The failed task stays stopped.
+Create a new task for the original work — adjusted if the failure revealed the original task was flawed. The failed task stays stopped. If the retry task needs sequencing, set `previous` to this fixer task (not the failed task — stopped tasks never satisfy dependencies).
 
 # Halt Condition
 
